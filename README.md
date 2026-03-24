@@ -33,21 +33,21 @@ Install dependencies
 ```terminal
 git clone https://github.com/yourusername/SoundBored.git
 cd SoundBored
+```
 
 Install dependencies:
-
+```terminal
 npm install
-
+```
 Create a local environment file:
-
+```terminal
 cp .env.example .env.local
-
+```
 Then add your Supabase and Spotify credentials to .env.local.
-
 Start the development server:
-
+```terminal
 npm run dev
-
+```
 Open http://localhost:3000
  in your browser.
 
