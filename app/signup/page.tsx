@@ -17,13 +17,21 @@ export default function SignupPage() {
     e.preventDefault();
     setMessage("");
 
+    const cleanUsername = username.trim().toLowerCase();
+    const cleanEmail = email.trim();
+
+    if (!cleanUsername || !cleanEmail || !password) {
+      setMessage("Please fill out all fields.");
+      return;
+    }
+
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: cleanEmail,
       password,
       options: {
         data: {
-          username,
-          display_name: username,
+          username: cleanUsername,
+          display_name: cleanUsername,
         },
       },
     });
@@ -35,23 +43,27 @@ export default function SignupPage() {
 
     const user = data.user;
 
-    if (user) {
-      const { error: profileError } = await supabase.from("profiles").insert([
-        {
-          id: user.id,
-          username,
-        },
-      ]);
+    if (!user) {
+      setMessage("Signup succeeded, but no user was returned.");
+      return;
+    }
 
-      if (profileError) {
-        setMessage(profileError.message);
-        return;
-      }
+    const { error: profileError } = await supabase.from("profiles").insert([
+      {
+        id: user.id,
+        username: cleanUsername,
+        display_name: cleanUsername,
+        bio: "",
+      },
+    ]);
+
+    if (profileError) {
+      setMessage(profileError.message);
+      return;
     }
 
     setMessage("Account created successfully.");
-
-    router.push("/dashboard");
+    router.push(`/profile/${cleanUsername}`);
   }
 
   return (
