@@ -57,7 +57,7 @@ export default function CustomPlaylistSection({
   }
 
   return (
-    <div className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
+    <div className="h-full rounded-2xl bg-zinc-900 p-5 shadow-lg">
       <div className="mb-3 flex items-center justify-between">
         {editingTitle ? (
           <div className="flex items-center gap-2">

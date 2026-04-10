@@ -25,7 +25,7 @@ export default function TextSection({
   }
 
   return (
-    <div className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
+    <div className="h-full rounded-2xl bg-zinc-900 p-5 shadow-lg">
       {isEditing ? (
         <div className="space-y-3">
           <input

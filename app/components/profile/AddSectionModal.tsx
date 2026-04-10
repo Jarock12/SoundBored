@@ -30,6 +30,13 @@ const SECTION_TYPES = [
     unique: false,
   },
   {
+    type: "cd",
+    label: "CD Player",
+    description: "A spinning CD disc with a song",
+    icon: "💿",
+    unique: false,
+  },
+  {
     type: "custom-playlist",
     label: "Custom Playlist",
     description: "Create a custom list of songs",

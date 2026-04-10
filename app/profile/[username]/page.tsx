@@ -1,18 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { DndContext, closestCenter, DragEndEvent } from "@dnd-kit/core";
 import {
-  SortableContext,
-  arrayMove,
-  rectSortingStrategy,
-} from "@dnd-kit/sortable";
+  ResponsiveGridLayout,
+  verticalCompactor,
+  type Layout,
+  type LayoutItem,
+} from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import { supabase } from "../../../utils/supabase/supabaseClient";
 import TopNav from "../../../components/TopNav";
 import NoteRating from "../../components/NoteRating";
-import SortableSection from "../../components/profile/SortableSection";
 import VinylPlayer from "../../components/profile/VinylPlayer";
 import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
@@ -27,17 +28,121 @@ function formatNotesText(rating: number) {
 type LayoutSection = {
   id: string;
   type: string;
-  width: "full" | "half" | "third";
   title: string;
-  position: number;
+  // react-grid-layout coordinates
+  x: number;
+  y: number;
+  w: number;
+  h: number;
   data?: Record<string, unknown>;
+  // legacy fields (for migration)
+  width?: "full" | "half" | "third";
+  position?: number;
 };
 
+const GRID_COLS = 12;
+const GRID_ROW_HEIGHT = 15;
+const GRID_MARGIN_Y = 8;
+
 const DEFAULT_LAYOUT: LayoutSection[] = [
-  { id: "recent-ratings", type: "recent-ratings", width: "third", title: "Recent Ratings", position: 0 },
-  { id: "favorite-tracks", type: "favorite-tracks", width: "third", title: "Favorite Tracks", position: 1 },
-  { id: "favorite-albums", type: "favorite-albums", width: "third", title: "Favorite Albums", position: 2 },
+  { id: "recent-ratings", type: "recent-ratings", title: "Recent Ratings", x: 0, y: 0, w: 4, h: 28 },
+  { id: "favorite-tracks", type: "favorite-tracks", title: "Favorite Tracks", x: 4, y: 0, w: 4, h: 28 },
+  { id: "favorite-albums", type: "favorite-albums", title: "Favorite Albums", x: 8, y: 0, w: 4, h: 28 },
 ];
+
+/** Convert old width/position layouts to x/y/w/h format */
+function migrateLayout(sections: LayoutSection[]): LayoutSection[] {
+  if (sections.length === 0) return sections;
+
+  // Old width/position format (no x/y/w/h)
+  if (typeof sections[0].x !== "number" || typeof sections[0].w !== "number") {
+    const widthMap: Record<string, number> = { full: 12, half: 6, third: 4 };
+    let curX = 0;
+    let curY = 0;
+    return sections
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((s) => {
+        const w = widthMap[s.width ?? "third"] ?? 4;
+        if (curX + w > GRID_COLS) {
+          curX = 0;
+          curY += 14;
+        }
+        const migrated = { ...s, x: curX, y: curY, w, h: 28 };
+        curX += w;
+        return migrated;
+      });
+  }
+
+  // Detect old 6-col layouts: max x+w would be <= 6
+  const maxRight = Math.max(...sections.map((s) => s.x + s.w));
+  if (maxRight <= 6 && sections.some((s) => s.w <= 3)) {
+    return sections.map((s) => ({
+      ...s,
+      x: s.x * 2,
+      y: s.y * 2,
+      w: s.w * 2,
+      h: s.h * 2,
+    }));
+  }
+
+  return sections;
+}
+
+function getDefaultSectionSize(type: string): { w: number; h: number } {
+  switch (type) {
+    case "text":
+      return { w: 4, h: 10 };
+    case "vinyl":
+    case "cd":
+      return { w: 4, h: 18 };
+    case "custom-playlist":
+      return { w: 4, h: 16 };
+    case "favorite-albums":
+      return { w: 4, h: 22 };
+    case "favorite-tracks":
+    case "recent-ratings":
+      return { w: 4, h: 28 };
+    default:
+      return { w: 4, h: 16 };
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getDynamicTextSectionSize(title: string, content: string): { w: number; h: number } {
+  const safeTitle = (title || "").trim();
+  const safeContent = (content || "").trim();
+  const combined = `${safeTitle} ${safeContent}`.trim();
+  const lines = safeContent.length > 0 ? safeContent.split(/\r?\n/) : [""];
+  const longestWord = combined
+    .split(/\s+/)
+    .reduce((max, word) => Math.max(max, word.length), 0);
+
+  // Width heuristic: short text stays narrow, sentence-like text gets wider,
+  // very long words force extra width to avoid tall narrow boxes.
+  let w = 4;
+  if (combined.length <= 24 && lines.length <= 1) w = 2;
+  else if (combined.length <= 60 && lines.length <= 2) w = 4;
+  else if (combined.length <= 120 && lines.length <= 3) w = 6;
+  else w = 7;
+
+  if (longestWord >= 16) w = Math.max(w, 6);
+  if (longestWord >= 24) w = Math.max(w, 8);
+  w = clamp(w, 2, 8);
+
+  // Estimate wrapped line count based on chosen width.
+  const charsPerLine = w * 16;
+  const wrappedLines = lines.reduce((sum, line) => {
+    const len = Math.max(1, line.trim().length);
+    return sum + Math.max(1, Math.ceil(len / charsPerLine));
+  }, 0);
+
+  // Height heuristic: keep tiny text tiny, scale as wrapped lines increase.
+  const rows = clamp(5 + Math.ceil(wrappedLines * 1.7), 5, 30);
+  return { w, h: rows };
+}
 
 type Profile = {
   id: string;
@@ -160,6 +265,21 @@ export default function ProfilePage() {
   const [layout, setLayout] = useState<LayoutSection[]>(DEFAULT_LAYOUT);
   const [isEditMode, setIsEditMode] = useState(false);
   const [showAddSection, setShowAddSection] = useState(false);
+  const [isAutoFitting, setIsAutoFitting] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(1200);
+
+  useEffect(() => {
+    const updateWidth = () => {
+      setViewportWidth(window.innerWidth || 1200);
+    };
+
+    updateWidth();
+    window.addEventListener("resize", updateWidth);
+
+    return () => {
+      window.removeEventListener("resize", updateWidth);
+    };
+  }, []);
 
   function reorderAlbumsLocal(albumAId: string, albumBId: string) {
     setFavoriteAlbums((prev) => {
@@ -243,7 +363,7 @@ export default function ProfilePage() {
 
     setProfile(profileData);
     setBioDraft(profileData.bio || "");
-    setLayout(profileData.profile_layout || DEFAULT_LAYOUT);
+    setLayout(migrateLayout(profileData.profile_layout || DEFAULT_LAYOUT));
 
     const ownProfile = !!user?.id && user.id === profileData.id;
     setIsOwnProfile(ownProfile);
@@ -931,6 +1051,8 @@ export default function ProfilePage() {
 
   /* ───── Layout handlers ───── */
 
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   async function saveLayout(newLayout: LayoutSection[]) {
     setLayout(newLayout);
     if (!currentUserId) return;
@@ -940,31 +1062,32 @@ export default function ProfilePage() {
       .eq("id", currentUserId);
   }
 
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const oldIndex = layout.findIndex((s) => s.id === active.id);
-    const newIndex = layout.findIndex((s) => s.id === over.id);
-    const reordered = arrayMove(layout, oldIndex, newIndex).map((s, i) => ({
-      ...s,
-      position: i,
-    }));
-    saveLayout(reordered);
-  }
-
-  function handleResizeSection(
-    sectionId: string,
-    width: "full" | "half" | "third"
-  ) {
-    saveLayout(layout.map((s) => (s.id === sectionId ? { ...s, width } : s)));
-  }
+  /** Called by react-grid-layout when items are moved or resized */
+  const handleLayoutChange = useCallback(
+    (rglLayout: Layout) => {
+      // Only persist when the user is actively editing
+      if (!isEditMode) return;
+      const updated = layout.map((section) => {
+        const item = rglLayout.find((l: LayoutItem) => l.i === section.id);
+        if (!item) return section;
+        return { ...section, x: item.x, y: item.y, w: item.w, h: item.h };
+      });
+      setLayout(updated);
+      // Debounce save to Supabase
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        if (!currentUserId) return;
+        supabase
+          .from("profiles")
+          .update({ profile_layout: updated })
+          .eq("id", currentUserId);
+      }, 500);
+    },
+    [currentUserId, isEditMode, layout]
+  );
 
   function handleRemoveSection(sectionId: string) {
-    saveLayout(
-      layout
-        .filter((s) => s.id !== sectionId)
-        .map((s, i) => ({ ...s, position: i }))
-    );
+    saveLayout(layout.filter((s) => s.id !== sectionId));
   }
 
   function handleAddSection(type: string, title: string) {
@@ -972,20 +1095,48 @@ export default function ProfilePage() {
     const data =
       type === "text"
         ? { content: "" }
-        : type === "vinyl"
+        : type === "vinyl" || type === "cd"
           ? {}
           : type === "custom-playlist"
             ? { tracks: [] }
             : undefined;
+    // Place new section at the bottom, 2 columns wide
+    const maxY = layout.reduce((max, s) => Math.max(max, s.y + s.h), 0);
+    const size = getDefaultSectionSize(type);
     saveLayout([
       ...layout,
-      { id, type, width: "third", title, position: layout.length, data },
+      { id, type, title, x: 0, y: maxY, w: size.w, h: size.h, data },
     ]);
   }
 
-  function updateSectionData(sectionId: string, data: Record<string, unknown>) {
+  async function handleAutoFitTextSections() {
+    if (!isEditMode || isAutoFitting) return;
+    setIsAutoFitting(true);
+
+    const updated = layout.map((section) => {
+      // Text sections: true content-based measurement.
+      if (section.type === "text") {
+        const content = (section.data?.content as string) || "";
+        const size = getDynamicTextSectionSize(section.title, content);
+        return { ...section, w: size.w, h: size.h };
+      }
+
+      // Other sections: snap to tuned defaults so auto-fit has visible effect.
+      const size = getDefaultSectionSize(section.type);
+      return { ...section, h: size.h };
+    });
+
+    await saveLayout(updated);
+    setIsAutoFitting(false);
+  }
+
+  function updateSectionData(sectionId: string, data: Record<string, unknown>, newTitle?: string) {
     saveLayout(
-      layout.map((s) => (s.id === sectionId ? { ...s, data } : s))
+      layout.map((s) =>
+        s.id === sectionId
+          ? { ...s, data, ...(newTitle !== undefined ? { title: newTitle } : {}) }
+          : s
+      )
     );
   }
 
@@ -1009,9 +1160,24 @@ export default function ProfilePage() {
         return (
           <VinylPlayer
             title={section.title}
-            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null }) || null}
+            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; preview_url?: string | null }) || null}
+            variant="vinyl"
+            colors={(section.data?.colors as Record<string, string>) || undefined}
             isOwnProfile={isOwnProfile}
-            onSelectTrack={(track) => updateSectionData(section.id, { track })}
+            onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
+            onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+          />
+        );
+      case "cd":
+        return (
+          <VinylPlayer
+            title={section.title}
+            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; preview_url?: string | null }) || null}
+            variant="cd"
+            colors={(section.data?.colors as Record<string, string>) || undefined}
+            isOwnProfile={isOwnProfile}
+            onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
+            onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
           />
         );
       case "text":
@@ -1021,8 +1187,14 @@ export default function ProfilePage() {
             content={(section.data?.content as string) || ""}
             isOwnProfile={isOwnProfile}
             onSave={(title, content) => {
-              updateSectionTitle(section.id, title);
-              updateSectionData(section.id, { content });
+              const size = getDynamicTextSectionSize(title, content);
+              saveLayout(
+                layout.map((s) =>
+                  s.id === section.id
+                    ? { ...s, title, data: { content }, w: size.w, h: size.h }
+                    : s
+                )
+              );
             }}
           />
         );
@@ -1052,7 +1224,7 @@ export default function ProfilePage() {
 
   function renderRecentRatings() {
     return (
-      <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
+      <section className="h-full rounded-2xl bg-zinc-900 p-5 shadow-lg">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-bold">Recent Ratings</h2>
           <div className="flex gap-2">
@@ -1128,7 +1300,7 @@ export default function ProfilePage() {
 
   function renderFavoriteTracks() {
     return (
-      <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
+      <section className="h-full rounded-2xl bg-zinc-900 p-5 shadow-lg">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-bold">Favorite Tracks</h2>
           {isOwnProfile && (
@@ -1214,7 +1386,7 @@ export default function ProfilePage() {
 
   function renderFavoriteAlbums() {
     return (
-      <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
+      <section className="h-full rounded-2xl bg-zinc-900 p-5 shadow-lg">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-bold">Favorite Albums</h2>
           {isOwnProfile && (
@@ -1318,9 +1490,48 @@ export default function ProfilePage() {
   }
 
   return (
-    <main className="min-h-screen px-6 py-8 text-white">
+    <main className="min-h-screen overflow-x-hidden px-6 py-8 text-white">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-        <div className="rounded-2xl bg-zinc-900 p-8 shadow-lg">
+        <div className="relative rounded-2xl bg-zinc-900 p-8 shadow-lg">
+          {isOwnProfile && (
+            <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (isEditMode) {
+                    // Flush any pending save immediately
+                    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+                    saveLayout(layout);
+                  }
+                  setIsEditMode(!isEditMode);
+                }}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                  isEditMode
+                    ? "bg-green-500 text-black hover:bg-green-600"
+                    : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                }`}
+              >
+                {isEditMode ? "Done Customizing" : "Customize Profile"}
+              </button>
+              {isEditMode && (
+                <button
+                  onClick={() => setShowAddSection(true)}
+                  className="rounded-lg border border-green-500 px-4 py-2 text-sm font-semibold text-green-400 hover:bg-green-500/10"
+                >
+                  + Add Section
+                </button>
+              )}
+              {isEditMode && (
+                <button
+                  onClick={handleAutoFitTextSections}
+                  disabled={isAutoFitting}
+                  className="rounded-lg border border-green-500 px-4 py-2 text-sm font-semibold text-green-300 hover:bg-green-500/10 disabled:opacity-60"
+                  title="Auto-fit section heights"
+                >
+                  {isAutoFitting ? "Fitting..." : "Auto-fit Boxes"}
+                </button>
+              )}
+            </div>
+          )}
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-5">
               <div className="relative group">
@@ -1512,48 +1723,6 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {isOwnProfile && (
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsEditMode(!isEditMode)}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                isEditMode
-                  ? "bg-green-500 text-black hover:bg-green-600"
-                  : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-              }`}
-            >
-              {isEditMode ? "Done Customizing" : "Customize Profile"}
-            </button>
-            {isEditMode && (
-              <button
-                onClick={() => setShowAddSection(true)}
-                className="rounded-lg border border-green-500 px-4 py-2 text-sm font-semibold text-green-400 hover:bg-green-500/10"
-              >
-                + Add Section
-              </button>
-            )}
-          </div>
-        )}
-
-        <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={layout.map((s) => s.id)} strategy={rectSortingStrategy}>
-            <div className="grid grid-cols-6 gap-6">
-              {layout.map((section) => (
-                <SortableSection
-                  key={section.id}
-                  id={section.id}
-                  width={section.width}
-                  isEditMode={isEditMode}
-                  onRemove={() => handleRemoveSection(section.id)}
-                  onResize={(w) => handleResizeSection(section.id, w)}
-                >
-                  {renderSectionContent(section)}
-                </SortableSection>
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
-
         {showAddSection && (
           <AddSectionModal
             existingTypes={layout.map((s) => s.type)}
@@ -1561,6 +1730,62 @@ export default function ProfilePage() {
             onClose={() => setShowAddSection(false)}
           />
         )}
+      </div>
+
+      {/* Grid layout — full-width, outside the constrained container */}
+      <div
+        className={`relative left-1/2 w-screen -translate-x-1/2 ${isEditMode ? "profile-grid-overlay" : ""}`}
+      >
+        <ResponsiveGridLayout
+          className="layout"
+          width={viewportWidth}
+          layouts={{
+            lg: layout.map((s) => ({
+              i: s.id,
+              x: s.x,
+              y: s.y,
+              w: s.w,
+              h: s.h,
+              minW: 1,
+              minH: 2,
+            })),
+          }}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 0 }}
+          cols={{ lg: 12, md: 12, sm: 12, xs: 12 }}
+          rowHeight={GRID_ROW_HEIGHT}
+          dragConfig={{ enabled: isEditMode, handle: ".grid-drag-handle" }}
+          resizeConfig={{ enabled: isEditMode }}
+          compactor={verticalCompactor}
+          margin={[8, GRID_MARGIN_Y]}
+          onLayoutChange={(rglLayout) => handleLayoutChange(rglLayout)}
+        >
+          {layout.map((section) => (
+            <div key={section.id} className="relative flex h-full flex-col overflow-hidden rounded-xl bg-zinc-900">
+              {isEditMode && (
+                <div className="flex items-center gap-1 bg-zinc-800/80 px-2 py-1">
+                  <button
+                    className="grid-drag-handle cursor-grab rounded p-1 text-zinc-500 hover:text-zinc-300 active:cursor-grabbing"
+                    title="Drag to reorder"
+                  >
+                    ⠿
+                  </button>
+                  <div className="ml-auto flex gap-1">
+                    <button
+                      onClick={() => handleRemoveSection(section.id)}
+                      className="rounded border border-red-700 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950/40"
+                      title="Remove section"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="min-h-0 flex-1 overflow-auto p-3">
+                {renderSectionContent(section)}
+              </div>
+            </div>
+          ))}
+        </ResponsiveGridLayout>
       </div>
     </main>
   );

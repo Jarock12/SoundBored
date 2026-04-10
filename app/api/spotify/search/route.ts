@@ -66,6 +66,7 @@ export async function GET(req: NextRequest) {
         artist_name: track.artists?.map((a: any) => a.name).join(", ") || "",
         album_name: track.album?.name || null,
         image_url: track.album?.images?.[0]?.url || null,
+        preview_url: track.preview_url || null,
       })) || [];
 
     return NextResponse.json({ tracks });
