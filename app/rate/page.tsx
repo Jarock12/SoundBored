@@ -1,8 +1,25 @@
 "use client";
 
+/**
+ * Rate a Song Page (/rate)
+ *
+ * Lets the current user search for a track on Spotify and submit a rating
+ * (0.5–5.0 in half-step increments) plus an optional written review.
+ *
+ * Ratings are upserted into the song_ratings table — if the user has already
+ * rated the same Spotify track, their existing rating is updated instead of
+ * creating a duplicate.
+ *
+ * The search proxies through /api/spotify/search so the Spotify credentials
+ * never reach the browser.
+ *
+ * Protected: redirects to /login if not authenticated.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
+import { getCurrentUserSafe } from "../../utils/supabase/auth";
 import TopNav from "../../components/TopNav";
 import NoteRating from "../components/NoteRating";
 
@@ -41,9 +58,7 @@ export default function RateSongPage() {
 
   useEffect(() => {
     async function loadCurrentProfile() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const user = await getCurrentUserSafe();
 
       if (!user) {
         router.push("/login");
@@ -103,9 +118,7 @@ export default function RateSongPage() {
     e.preventDefault();
     setMessage("");
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUserSafe();
 
     if (!user) {
       setMessage("You must be logged in to rate songs.");

@@ -1,4 +1,13 @@
-// lib/spotify.ts
+/**
+ * lib/spotify.ts — Spotify API authentication
+ *
+ * Uses the Client Credentials OAuth flow to get a short-lived access token.
+ * This flow is server-to-server only — it doesn't require a user to log in
+ * and is suitable for reading public Spotify data (search, track info, etc.).
+ *
+ * The token is fetched fresh on every call (no caching). Tokens expire in 3600s.
+ * If we need to reduce Spotify API calls we could cache this in memory or Redis.
+ */
 
 export async function getSpotifyAccessToken() {
   const clientId = process.env.SPOTIFY_CLIENT_ID;

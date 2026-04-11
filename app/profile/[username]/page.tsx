@@ -1,16 +1,291 @@
 "use client";
 
+/**
+ * Profile Page (/profile/[username])
+ *
+ * Dynamic public profile for any user. The page is split into two areas:
+ *
+ * 1. PROFILE HEADER — avatar, display name, bio, follow stats, follow button.
+ *    - Admins see a blue shield (🛡️) badge next to the display name.
+ *    - Admins viewing someone else's profile see a ban/unban/delete action strip.
+ *    - The profile owner sees edit controls for name, bio, avatar, colors, and layout.
+ *
+ * 2. SECTION GRID — a drag-and-drop 12-column grid built with react-grid-layout.
+ *    Sections can be: recent-ratings, favorite-tracks, favorite-albums, vinyl,
+ *    cd, custom-playlist, concert-ticket, or text.
+ *    - In view mode the grid is static and compact.
+ *    - In edit mode (own profile only) sections are draggable and resizable,
+ *      and the user can add new sections, change their theme, and auto-fit heights.
+ *
+ * Data loaded on mount:
+ *  - profiles row for the viewed username (includes is_admin + is_banned)
+ *  - Current viewer's profile (to check is_admin and determine isOwnProfile)
+ *  - favorite_tracks, favorite_albums, song_ratings for the viewed profile
+ *  - follows counts + whether the viewer is already following
+ *  - Pattern/color theme stored in the profiles row
+ */
+
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import {
+  ResponsiveGridLayout,
+  verticalCompactor,
+  type Layout,
+  type LayoutItem,
+} from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import { supabase } from "../../../utils/supabase/supabaseClient";
+import { getCurrentUserSafe } from "../../../utils/supabase/auth";
 import TopNav from "../../../components/TopNav";
 import NoteRating from "../../components/NoteRating";
+import VinylPlayer from "../../components/profile/VinylPlayer";
+import TextSection from "../../components/profile/TextSection";
+import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
+import ConcertTicketStubSection from "../../components/profile/ConcertTicketStubSection";
+import AddSectionModal from "../../components/profile/AddSectionModal";
+import StickerLayer, {
+  type PlacedSticker,
+  type UserCustomSticker,
+} from "../../components/profile/StickerLayer";
 
 function formatNotesText(rating: number) {
   const fullNotes = Math.floor(rating);
   const half = rating % 1 !== 0;
   return "♪".repeat(fullNotes) + (half ? "½" : "");
+}
+
+type LayoutSection = {
+  id: string;
+  type: string;
+  title: string;
+  // react-grid-layout coordinates
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  data?: Record<string, unknown>;
+  // legacy fields (for migration)
+  width?: "full" | "half" | "third";
+  position?: number;
+};
+
+const GRID_COLS = 12;
+const GRID_ROW_HEIGHT = 15;
+const GRID_MARGIN_Y = 8;
+const DEFAULT_NOTE_COLOR = "#22c55e";
+const DEFAULT_ACCENT_TEXT_COLOR = "#22c55e";
+const DEFAULT_CARD_BG_COLOR = "#27272a";
+const DEFAULT_CARD_BG_OPACITY = 0.6;
+const DEFAULT_INNER_BG_COLOR = "#3f3f46";
+const DEFAULT_INNER_BG_OPACITY = 0.6;
+const DEFAULT_PROFILE_PATTERN = "none" as const;
+const DEFAULT_PROFILE_PATTERN_COLOR = "#22c55e";
+const DEFAULT_PROFILE_PATTERN_OPACITY = 0.2;
+const DEFAULT_PROFILE_BOX_BG_COLOR = "#18181b";
+const DEFAULT_PROFILE_BOX_BG_OPACITY = 0.95;
+
+type ProfileCardPattern = "none" | "dots" | "grid" | "diagonal" | "waves" | "crosshatch";
+
+type SectionTheme = {
+  accentTextColor: string;
+  outerBgColor: string;
+  outerBgOpacity: number;
+  innerBgColor: string;
+  innerBgOpacity: number;
+};
+
+function clampOpacity(value: number): number {
+  return Math.max(0.1, Math.min(1, value));
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const safeHex = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : DEFAULT_CARD_BG_COLOR;
+  const normalized = safeHex.replace("#", "");
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${clampOpacity(alpha)})`;
+}
+
+function clampAlpha(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function hexToRgbaAlpha(hex: string, alpha: number): string {
+  const safeHex = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : DEFAULT_PROFILE_PATTERN_COLOR;
+  const normalized = safeHex.replace("#", "");
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${clampAlpha(alpha)})`;
+}
+
+function getProfileCardPatternStyle(
+  pattern: ProfileCardPattern,
+  color: string,
+  opacity: number
+): React.CSSProperties {
+  const rgba = hexToRgbaAlpha(color, opacity);
+
+  if (pattern === "dots") {
+    return {
+      backgroundImage: `radial-gradient(${rgba} 1px, transparent 1px)`,
+      backgroundSize: "16px 16px",
+    };
+  }
+
+  if (pattern === "grid") {
+    return {
+      backgroundImage: `linear-gradient(${rgba} 1px, transparent 1px), linear-gradient(90deg, ${rgba} 1px, transparent 1px)`,
+      backgroundSize: "20px 20px",
+      backgroundPosition: "-1px -1px",
+    };
+  }
+
+  if (pattern === "diagonal") {
+    return {
+      backgroundImage: `repeating-linear-gradient(45deg, ${rgba} 0px, ${rgba} 2px, transparent 2px, transparent 12px)`,
+    };
+  }
+
+  if (pattern === "waves") {
+    return {
+      backgroundImage: `radial-gradient(circle at 0 100%, ${rgba} 0, ${rgba} 18%, transparent 19%), radial-gradient(circle at 50% 100%, ${rgba} 0, ${rgba} 18%, transparent 19%)`,
+      backgroundSize: "36px 18px",
+      backgroundPosition: "0 0, 18px 9px",
+    };
+  }
+
+  if (pattern === "crosshatch") {
+    return {
+      backgroundImage: `repeating-linear-gradient(45deg, ${rgba} 0px, ${rgba} 1px, transparent 1px, transparent 10px), repeating-linear-gradient(-45deg, ${rgba} 0px, ${rgba} 1px, transparent 1px, transparent 10px)`,
+    };
+  }
+
+  return {};
+}
+
+function estimateSnugRows(itemCount: number, extraPx = 0): number {
+  const safeCount = Math.max(0, itemCount);
+  const panelPaddingPx = 40; // p-5 top+bottom
+  const headerPx = 42;
+  const gapPx = 8;
+  const itemPx = 128; // slightly generous to avoid clipping from dynamic content
+  const emptyPx = 92;
+
+  const listPx =
+    safeCount === 0
+      ? emptyPx
+      : safeCount * itemPx + Math.max(0, safeCount - 1) * gapPx;
+
+  const totalPx = panelPaddingPx + headerPx + extraPx + listPx;
+  const rowUnit = GRID_ROW_HEIGHT + GRID_MARGIN_Y;
+  // Add one safety row so inner cards always keep a visible bottom gap.
+  return clamp(Math.ceil(totalPx / rowUnit) + 1, 8, 80);
+}
+
+const DEFAULT_LAYOUT: LayoutSection[] = [
+  { id: "recent-ratings", type: "recent-ratings", title: "Recent Ratings", x: 0, y: 0, w: 4, h: 28 },
+  { id: "favorite-tracks", type: "favorite-tracks", title: "Favorite Tracks", x: 4, y: 0, w: 4, h: 28 },
+  { id: "favorite-albums", type: "favorite-albums", title: "Favorite Albums", x: 8, y: 0, w: 4, h: 28 },
+];
+
+/** Convert old width/position layouts to x/y/w/h format */
+function migrateLayout(sections: LayoutSection[]): LayoutSection[] {
+  if (sections.length === 0) return sections;
+
+  // Old width/position format (no x/y/w/h)
+  if (typeof sections[0].x !== "number" || typeof sections[0].w !== "number") {
+    const widthMap: Record<string, number> = { full: 12, half: 6, third: 4 };
+    let curX = 0;
+    let curY = 0;
+    return sections
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((s) => {
+        const w = widthMap[s.width ?? "third"] ?? 4;
+        if (curX + w > GRID_COLS) {
+          curX = 0;
+          curY += 14;
+        }
+        const migrated = { ...s, x: curX, y: curY, w, h: 28 };
+        curX += w;
+        return migrated;
+      });
+  }
+
+  // Detect old 6-col layouts: max x+w would be <= 6
+  const maxRight = Math.max(...sections.map((s) => s.x + s.w));
+  if (maxRight <= 6 && sections.some((s) => s.w <= 3)) {
+    return sections.map((s) => ({
+      ...s,
+      x: s.x * 2,
+      y: s.y * 2,
+      w: s.w * 2,
+      h: s.h * 2,
+    }));
+  }
+
+  return sections;
+}
+
+function getDefaultSectionSize(type: string): { w: number; h: number } {
+  switch (type) {
+    case "text":
+      return { w: 4, h: 10 };
+    case "vinyl":
+    case "cd":
+      return { w: 4, h: 18 };
+    case "custom-playlist":
+      return { w: 4, h: 16 };
+    case "concert-ticket":
+      return { w: 4, h: 20 };
+    case "favorite-albums":
+      return { w: 4, h: 22 };
+    case "favorite-tracks":
+    case "recent-ratings":
+      return { w: 4, h: 28 };
+    default:
+      return { w: 4, h: 16 };
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getDynamicTextSectionSize(title: string, content: string): { w: number; h: number } {
+  const safeTitle = (title || "").trim();
+  const safeContent = (content || "").trim();
+  const combined = `${safeTitle} ${safeContent}`.trim();
+  const lines = safeContent.length > 0 ? safeContent.split(/\r?\n/) : [""];
+  const longestWord = combined
+    .split(/\s+/)
+    .reduce((max, word) => Math.max(max, word.length), 0);
+
+  // Width heuristic: short text stays narrow, sentence-like text gets wider,
+  // very long words force extra width to avoid tall narrow boxes.
+  let w = 4;
+  if (combined.length <= 24 && lines.length <= 1) w = 2;
+  else if (combined.length <= 60 && lines.length <= 2) w = 4;
+  else if (combined.length <= 120 && lines.length <= 3) w = 6;
+  else w = 7;
+
+  if (longestWord >= 16) w = Math.max(w, 6);
+  if (longestWord >= 24) w = Math.max(w, 8);
+  w = clamp(w, 2, 8);
+
+  // Estimate wrapped line count based on chosen width.
+  const charsPerLine = w * 16;
+  const wrappedLines = lines.reduce((sum, line) => {
+    const len = Math.max(1, line.trim().length);
+    return sum + Math.max(1, Math.ceil(len / charsPerLine));
+  }, 0);
+
+  // Height heuristic: keep tiny text tiny, scale as wrapped lines increase.
+  const rows = clamp(5 + Math.ceil(wrappedLines * 1.7), 5, 30);
+  return { w, h: rows };
 }
 
 type Profile = {
@@ -19,6 +294,15 @@ type Profile = {
   display_name: string | null;
   bio: string | null;
   avatar_url: string | null;
+  profile_layout: LayoutSection[] | null;
+  note_color?: string | null;
+  accent_text_color?: string | null;
+  /** Whether this user is a site admin — shows the shield badge publicly */
+  is_admin?: boolean | null;
+  /** Whether this user has been banned by an admin */
+  is_banned?: boolean | null;
+  /** Free-floating stickers placed on the profile grid (JSONB array) */
+  stickers?: PlacedSticker[] | null;
 };
 
 type FavoriteTrack = {
@@ -102,6 +386,26 @@ export default function ProfilePage() {
   const [displayNameSaving, setDisplayNameSaving] = useState(false);
 
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [noteColor, setNoteColor] = useState(DEFAULT_NOTE_COLOR);
+  const [noteColorSaving, setNoteColorSaving] = useState(false);
+  const [noteColorMessage, setNoteColorMessage] = useState("");
+  const [accentTextColor, setAccentTextColor] = useState(DEFAULT_ACCENT_TEXT_COLOR);
+  const [accentTextSaving, setAccentTextSaving] = useState(false);
+  const [accentTextMessage, setAccentTextMessage] = useState("");
+  const [profileCardPattern, setProfileCardPattern] = useState<ProfileCardPattern>(DEFAULT_PROFILE_PATTERN);
+  const [profileCardPatternColor, setProfileCardPatternColor] = useState(DEFAULT_PROFILE_PATTERN_COLOR);
+  const [profileCardPatternOpacity, setProfileCardPatternOpacity] = useState(DEFAULT_PROFILE_PATTERN_OPACITY);
+  const [profileBoxBgColor, setProfileBoxBgColor] = useState(DEFAULT_PROFILE_BOX_BG_COLOR);
+  const [profileBoxBgOpacity, setProfileBoxBgOpacity] = useState(DEFAULT_PROFILE_BOX_BG_OPACITY);
+  const [profilePatternSaving, setProfilePatternSaving] = useState(false);
+  const [profilePatternMessage, setProfilePatternMessage] = useState("");
+  const [styleTargetSectionId, setStyleTargetSectionId] = useState<string>("all");
+  const [boxAccentDraft, setBoxAccentDraft] = useState(DEFAULT_ACCENT_TEXT_COLOR);
+  const [boxOuterBgColorDraft, setBoxOuterBgColorDraft] = useState(DEFAULT_CARD_BG_COLOR);
+  const [boxOuterBgOpacityDraft, setBoxOuterBgOpacityDraft] = useState(DEFAULT_CARD_BG_OPACITY);
+  const [boxInnerBgColorDraft, setBoxInnerBgColorDraft] = useState(DEFAULT_INNER_BG_COLOR);
+  const [boxInnerBgOpacityDraft, setBoxInnerBgOpacityDraft] = useState(DEFAULT_INNER_BG_OPACITY);
+  const [boxStyleMessage, setBoxStyleMessage] = useState("");
 
   const [showAlbumForm, setShowAlbumForm] = useState(false);
   const [albumPosition, setAlbumPosition] = useState("1");
@@ -125,10 +429,132 @@ export default function ProfilePage() {
 
   const [busyAction, setBusyAction] = useState("");
 
+  // Admin state — whether the logged-in viewer is an admin, and status of admin actions
+  const [isCurrentUserAdmin, setIsCurrentUserAdmin] = useState(false);
+  const [adminActionMessage, setAdminActionMessage] = useState("");
+  const [adminActionBusy, setAdminActionBusy] = useState(false);
+
+  // Sticker state
+  const [placedStickers, setPlacedStickers] = useState<PlacedSticker[]>([]);
+  const [userCustomStickers, setUserCustomStickers] = useState<UserCustomSticker[]>([]);
+  const [showStickerToolbar, setShowStickerToolbar] = useState(false);
+  const stickerSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [editingRatingId, setEditingRatingId] = useState<string | null>(null);
   const [editRatingValue, setEditRatingValue] = useState("");
   const [editReviewValue, setEditReviewValue] = useState("");
   const [ratingBusy, setRatingBusy] = useState("");
+
+  const [layout, setLayout] = useState<LayoutSection[]>(DEFAULT_LAYOUT);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [showAddSection, setShowAddSection] = useState(false);
+  const [isAutoFitting, setIsAutoFitting] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(1200);
+  const canCustomizeSections = isOwnProfile && isEditMode;
+
+  useEffect(() => {
+    const updateWidth = () => {
+      setViewportWidth(window.innerWidth || 1200);
+    };
+
+    updateWidth();
+    window.addEventListener("resize", updateWidth);
+
+    return () => {
+      window.removeEventListener("resize", updateWidth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isEditMode) {
+      setShowTrackForm(false);
+      setShowAlbumForm(false);
+      setEditingRatingId(null);
+      setTrackMessage("");
+      setAlbumMessage("");
+      setShowStickerToolbar(false);
+    }
+  }, [isEditMode]);
+
+  useEffect(() => {
+    if (styleTargetSectionId === "all") {
+      if (layout.length === 0) {
+        setBoxAccentDraft(accentTextColor);
+        setBoxOuterBgColorDraft(DEFAULT_CARD_BG_COLOR);
+        setBoxOuterBgOpacityDraft(DEFAULT_CARD_BG_OPACITY);
+        setBoxInnerBgColorDraft(DEFAULT_INNER_BG_COLOR);
+        setBoxInnerBgOpacityDraft(DEFAULT_INNER_BG_OPACITY);
+        return;
+      }
+
+      // Reflect actual applied styles in controls when "All Boxes" is selected.
+      const baseTheme = getSectionTheme(layout[0]);
+      setBoxAccentDraft(baseTheme.accentTextColor);
+      setBoxOuterBgColorDraft(baseTheme.outerBgColor);
+      setBoxOuterBgOpacityDraft(baseTheme.outerBgOpacity);
+      setBoxInnerBgColorDraft(baseTheme.innerBgColor);
+      setBoxInnerBgOpacityDraft(baseTheme.innerBgOpacity);
+      return;
+    }
+
+    const selected = layout.find((section) => section.id === styleTargetSectionId);
+    if (!selected) return;
+    const theme = getSectionTheme(selected);
+    setBoxAccentDraft(theme.accentTextColor);
+    setBoxOuterBgColorDraft(theme.outerBgColor);
+    setBoxOuterBgOpacityDraft(theme.outerBgOpacity);
+    setBoxInnerBgColorDraft(theme.innerBgColor);
+    setBoxInnerBgOpacityDraft(theme.innerBgOpacity);
+  }, [styleTargetSectionId, layout, accentTextColor]);
+
+  useEffect(() => {
+    if (isEditMode) return;
+
+    let changed = false;
+
+    const nextLayout = layout.map((section) => {
+      let targetH = section.h;
+
+      if (section.type === "favorite-tracks") {
+        targetH = estimateSnugRows(favoriteTracks.length, showTrackForm ? 320 : 0);
+      } else if (section.type === "favorite-albums") {
+        targetH = estimateSnugRows(favoriteAlbums.length, showAlbumForm ? 320 : 0);
+      } else if (section.type === "recent-ratings") {
+        targetH = estimateSnugRows(recentRatings.length, (editingRatingId ? 120 : 0) + 24);
+      } else if (section.type === "custom-playlist") {
+        const tracks = (section.data?.tracks as unknown[] | undefined) || [];
+        targetH = estimateSnugRows(tracks.length, 0);
+      }
+
+      if (targetH !== section.h) {
+        changed = true;
+        return { ...section, h: targetH };
+      }
+
+      return section;
+    });
+
+    if (!changed) return;
+
+    setLayout(nextLayout);
+
+    if (currentUserId) {
+      supabase
+        .from("profiles")
+        .update({ profile_layout: nextLayout })
+        .eq("id", currentUserId);
+    }
+  }, [
+    layout,
+    isEditMode,
+    currentUserId,
+    favoriteTracks.length,
+    favoriteAlbums.length,
+    recentRatings.length,
+    showTrackForm,
+    showAlbumForm,
+    editingRatingId,
+  ]);
 
   function reorderAlbumsLocal(albumAId: string, albumBId: string) {
     setFavoriteAlbums((prev) => {
@@ -180,27 +606,30 @@ export default function ProfilePage() {
     setLoading(true);
     setNotFound(false);
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUserSafe();
 
     setCurrentUserId(user?.id || null);
 
     if (user?.id) {
+      // Fetch the logged-in user's own profile to get their username and admin status
       const { data: currentProfileData } = await supabase
         .from("profiles")
-        .select("username")
+        .select("username, is_admin")
         .eq("id", user.id)
         .single();
 
       if (currentProfileData?.username) {
         setCurrentUsername(currentProfileData.username);
       }
+      // Store whether the currently logged-in viewer is an admin
+      setIsCurrentUserAdmin(!!currentProfileData?.is_admin);
     }
 
+    // Fetch the profile being viewed — includes is_admin and is_banned so we can
+    // show the shield badge and let admins see the ban status of other users
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
-      .select("id, username, display_name, bio, avatar_url")
+      .select("id, username, display_name, bio, avatar_url, profile_layout, note_color, accent_text_color, is_admin, is_banned, stickers")
       .eq("username", username.toLowerCase())
       .single();
 
@@ -212,9 +641,82 @@ export default function ProfilePage() {
 
     setProfile(profileData);
     setBioDraft(profileData.bio || "");
+    setLayout(migrateLayout(profileData.profile_layout || DEFAULT_LAYOUT));
+    setPlacedStickers((profileData.stickers as PlacedSticker[] | null) || []);
+
+    if (/^#[0-9a-fA-F]{6}$/.test(profileData.note_color || "")) {
+      setNoteColor(profileData.note_color as string);
+    } else {
+      setNoteColor(DEFAULT_NOTE_COLOR);
+    }
+
+    if (/^#[0-9a-fA-F]{6}$/.test(profileData.accent_text_color || "")) {
+      setAccentTextColor(profileData.accent_text_color as string);
+    } else {
+      setAccentTextColor(DEFAULT_ACCENT_TEXT_COLOR);
+    }
+
+    const { data: patternData, error: patternError } = await supabase
+      .from("profiles")
+      .select("profile_card_pattern, profile_card_pattern_color, profile_card_pattern_opacity, profile_box_bg_color, profile_box_bg_opacity")
+      .eq("id", profileData.id)
+      .maybeSingle();
+
+    if (!patternError && patternData) {
+      const rawPattern = patternData.profile_card_pattern;
+      const parsedPattern: ProfileCardPattern =
+        rawPattern === "dots" || rawPattern === "grid" || rawPattern === "diagonal" || rawPattern === "waves" || rawPattern === "crosshatch"
+          ? rawPattern
+          : "none";
+      setProfileCardPattern(parsedPattern);
+
+      if (/^#[0-9a-fA-F]{6}$/.test(patternData.profile_card_pattern_color || "")) {
+        setProfileCardPatternColor(patternData.profile_card_pattern_color as string);
+      } else {
+        setProfileCardPatternColor(DEFAULT_PROFILE_PATTERN_COLOR);
+      }
+
+      const parsedOpacity = Number(patternData.profile_card_pattern_opacity);
+      if (!Number.isNaN(parsedOpacity)) {
+        setProfileCardPatternOpacity(clampAlpha(parsedOpacity));
+      } else {
+        setProfileCardPatternOpacity(DEFAULT_PROFILE_PATTERN_OPACITY);
+      }
+
+      if (/^#[0-9a-fA-F]{6}$/.test(patternData.profile_box_bg_color || "")) {
+        setProfileBoxBgColor(patternData.profile_box_bg_color as string);
+      } else {
+        setProfileBoxBgColor(DEFAULT_PROFILE_BOX_BG_COLOR);
+      }
+
+      const parsedBoxOpacity = Number(patternData.profile_box_bg_opacity);
+      if (!Number.isNaN(parsedBoxOpacity)) {
+        setProfileBoxBgOpacity(clampAlpha(parsedBoxOpacity));
+      } else {
+        setProfileBoxBgOpacity(DEFAULT_PROFILE_BOX_BG_OPACITY);
+      }
+    } else {
+      setProfileCardPattern(DEFAULT_PROFILE_PATTERN);
+      setProfileCardPatternColor(DEFAULT_PROFILE_PATTERN_COLOR);
+      setProfileCardPatternOpacity(DEFAULT_PROFILE_PATTERN_OPACITY);
+      setProfileBoxBgColor(DEFAULT_PROFILE_BOX_BG_COLOR);
+      setProfileBoxBgOpacity(DEFAULT_PROFILE_BOX_BG_OPACITY);
+    }
 
     const ownProfile = !!user?.id && user.id === profileData.id;
     setIsOwnProfile(ownProfile);
+
+    // Load the user's uploaded custom stickers so they can place them on their profile
+    if (ownProfile && user?.id) {
+      const { data: customStickerData } = await supabase
+        .from("user_stickers")
+        .select("id, image_url")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      setUserCustomStickers(customStickerData || []);
+    } else {
+      setUserCustomStickers([]);
+    }
 
     const { data: tracksData, error: tracksError } = await supabase
       .from("favorite_tracks")
@@ -291,6 +793,161 @@ export default function ProfilePage() {
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push("/");
+  }
+
+  /**
+   * Admin: ban or unban the profile being viewed.
+   * Calls /api/admin/ban or /api/admin/unban with the current session token.
+   * The server verifies admin status before taking action.
+   */
+  async function handleAdminBanToggle() {
+    if (!profile || !isCurrentUserAdmin) return;
+
+    setAdminActionMessage("");
+    setAdminActionBusy(true);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
+    if (!token) {
+      setAdminActionMessage("Session expired. Please log in again.");
+      setAdminActionBusy(false);
+      return;
+    }
+
+    const isBanned = !!profile.is_banned;
+    const endpoint = isBanned ? "/api/admin/unban" : "/api/admin/ban";
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId: profile.id }),
+    });
+
+    const json = await res.json();
+    setAdminActionBusy(false);
+
+    if (!res.ok) {
+      setAdminActionMessage(json.error || "Action failed.");
+      return;
+    }
+
+    // Update local profile state so the UI reflects the new ban status immediately
+    setProfile((prev) => (prev ? { ...prev, is_banned: !isBanned } : prev));
+    setAdminActionMessage(
+      isBanned
+        ? `@${profile.username} has been unbanned.`
+        : `@${profile.username} has been banned.`
+    );
+  }
+
+  /**
+   * Admin: permanently delete the user being viewed.
+   * Confirms with a dialog first, then calls /api/admin/delete.
+   * After success, redirects to /admin since the profile no longer exists.
+   */
+  async function handleAdminDelete() {
+    if (!profile || !isCurrentUserAdmin) return;
+
+    if (
+      !window.confirm(
+        `Permanently delete @${profile.username}? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setAdminActionMessage("");
+    setAdminActionBusy(true);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
+    if (!token) {
+      setAdminActionMessage("Session expired. Please log in again.");
+      setAdminActionBusy(false);
+      return;
+    }
+
+    const res = await fetch("/api/admin/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId: profile.id }),
+    });
+
+    const json = await res.json();
+    setAdminActionBusy(false);
+
+    if (!res.ok) {
+      setAdminActionMessage(json.error || "Delete failed.");
+      return;
+    }
+
+    // Profile is gone — redirect to the admin panel
+    router.push("/admin");
+  }
+
+  /**
+   * Called by StickerLayer whenever stickers are added, moved, or deleted.
+   * Updates local state immediately and debounces the Supabase write by 500 ms.
+   */
+  function handleStickersChange(stickers: PlacedSticker[]) {
+    setPlacedStickers(stickers);
+    if (!currentUserId) return;
+    if (stickerSaveTimeoutRef.current) clearTimeout(stickerSaveTimeoutRef.current);
+    stickerSaveTimeoutRef.current = setTimeout(() => {
+      supabase.from("profiles").update({ stickers }).eq("id", currentUserId);
+    }, 500);
+  }
+
+  /**
+   * Uploads a custom sticker PNG/WebP to the `stickers` Supabase Storage bucket,
+   * inserts a row in `user_stickers`, and returns the public URL.
+   * Returns null if validation fails or the upload errors.
+   */
+  async function handleUploadSticker(file: File): Promise<string | null> {
+    if (!currentUserId) return null;
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+    if (file.size > MAX_BYTES) return null;
+    if (!["image/png", "image/webp"].includes(file.type)) return null;
+
+    const ext = file.type === "image/webp" ? "webp" : "png";
+    const filePath = `${currentUserId}/${Date.now()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("stickers")
+      .upload(filePath, file, { upsert: false });
+
+    if (uploadError) return null;
+
+    const { data: publicUrlData } = supabase.storage
+      .from("stickers")
+      .getPublicUrl(filePath);
+
+    const imageUrl = publicUrlData.publicUrl;
+
+    const { data: insertedSticker } = await supabase
+      .from("user_stickers")
+      .insert({ user_id: currentUserId, image_url: imageUrl })
+      .select("id, image_url")
+      .single();
+
+    if (insertedSticker) {
+      setUserCustomStickers((prev) => [insertedSticker as UserCustomSticker, ...prev]);
+    }
+
+    return imageUrl;
   }
 
   async function handleToggleFollow() {
@@ -426,6 +1083,72 @@ export default function ProfilePage() {
     }
 
     setProfile((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev));
+  }
+
+  async function handleSaveNoteColor() {
+    if (!currentUserId || !isOwnProfile) return;
+    setNoteColorSaving(true);
+    setNoteColorMessage("");
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ note_color: noteColor })
+      .eq("id", currentUserId);
+
+    setNoteColorSaving(false);
+
+    if (error) {
+      setNoteColorMessage("Unable to save note color yet.");
+      return;
+    }
+
+    setNoteColorMessage("Saved");
+  }
+
+  async function handleSaveAccentTextColor() {
+    if (!currentUserId || !isOwnProfile) return;
+    setAccentTextSaving(true);
+    setAccentTextMessage("");
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ accent_text_color: accentTextColor })
+      .eq("id", currentUserId);
+
+    setAccentTextSaving(false);
+
+    if (error) {
+      setAccentTextMessage("Unable to save text color yet.");
+      return;
+    }
+
+    setAccentTextMessage("Saved");
+  }
+
+  async function handleSaveProfileCardPattern() {
+    if (!currentUserId || !isOwnProfile) return;
+    setProfilePatternSaving(true);
+    setProfilePatternMessage("");
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        profile_card_pattern: profileCardPattern,
+        profile_card_pattern_color: profileCardPatternColor,
+        profile_card_pattern_opacity: clampAlpha(profileCardPatternOpacity),
+        profile_box_bg_color: profileBoxBgColor,
+        profile_box_bg_opacity: clampAlpha(profileBoxBgOpacity),
+      })
+      .eq("id", currentUserId);
+
+    setProfilePatternSaving(false);
+
+    if (error) {
+      setProfilePatternMessage("Unable to save card pattern yet.");
+      return;
+    }
+
+    setProfilePatternMessage("Saved");
   }
 
   function startEditRating(rating: SongRating) {
@@ -897,6 +1620,561 @@ export default function ProfilePage() {
     await swapTrackPositions(track, other);
   }
 
+  /* ───── Layout handlers ───── */
+
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function saveLayout(newLayout: LayoutSection[]) {
+    setLayout(newLayout);
+    if (!currentUserId) return;
+    await supabase
+      .from("profiles")
+      .update({ profile_layout: newLayout })
+      .eq("id", currentUserId);
+  }
+
+  function getSectionTheme(section: LayoutSection): SectionTheme {
+    const rawTheme = section.data?.theme as Partial<SectionTheme> | undefined;
+    const legacyRawTheme = section.data?.theme as
+      | (Partial<SectionTheme> & { cardBgColor?: string; cardBgOpacity?: number })
+      | undefined;
+
+    const outerBgColor =
+      rawTheme?.outerBgColor && /^#[0-9a-fA-F]{6}$/.test(rawTheme.outerBgColor)
+        ? rawTheme.outerBgColor
+        : legacyRawTheme?.cardBgColor && /^#[0-9a-fA-F]{6}$/.test(legacyRawTheme.cardBgColor)
+          ? legacyRawTheme.cardBgColor
+          : DEFAULT_CARD_BG_COLOR;
+
+    const outerBgOpacity =
+      typeof rawTheme?.outerBgOpacity === "number"
+        ? clampOpacity(rawTheme.outerBgOpacity)
+        : typeof legacyRawTheme?.cardBgOpacity === "number"
+          ? clampOpacity(legacyRawTheme.cardBgOpacity)
+          : DEFAULT_CARD_BG_OPACITY;
+
+    return {
+      accentTextColor:
+        rawTheme?.accentTextColor && /^#[0-9a-fA-F]{6}$/.test(rawTheme.accentTextColor)
+          ? rawTheme.accentTextColor
+          : accentTextColor,
+      outerBgColor,
+      outerBgOpacity,
+      innerBgColor:
+        rawTheme?.innerBgColor && /^#[0-9a-fA-F]{6}$/.test(rawTheme.innerBgColor)
+          ? rawTheme.innerBgColor
+          : DEFAULT_INNER_BG_COLOR,
+      innerBgOpacity:
+        typeof rawTheme?.innerBgOpacity === "number"
+          ? clampOpacity(rawTheme.innerBgOpacity)
+          : DEFAULT_INNER_BG_OPACITY,
+    };
+  }
+
+  function applyBoxStyleToSection(sectionId: string) {
+    const updatedLayout = layout.map((section) => {
+      if (section.id !== sectionId) return section;
+      return {
+        ...section,
+        data: {
+          ...(section.data || {}),
+          theme: {
+            accentTextColor: boxAccentDraft,
+            outerBgColor: boxOuterBgColorDraft,
+            outerBgOpacity: clampOpacity(boxOuterBgOpacityDraft),
+            innerBgColor: boxInnerBgColorDraft,
+            innerBgOpacity: clampOpacity(boxInnerBgOpacityDraft),
+          },
+        },
+      };
+    });
+
+    saveLayout(updatedLayout);
+    setBoxStyleMessage("Applied to selected box.");
+  }
+
+  function applyBoxStyleToAllSections() {
+    const updatedLayout = layout.map((section) => ({
+      ...section,
+      data: {
+        ...(section.data || {}),
+        theme: {
+          accentTextColor: boxAccentDraft,
+          outerBgColor: boxOuterBgColorDraft,
+          outerBgOpacity: clampOpacity(boxOuterBgOpacityDraft),
+          innerBgColor: boxInnerBgColorDraft,
+          innerBgOpacity: clampOpacity(boxInnerBgOpacityDraft),
+        },
+      },
+    }));
+
+    saveLayout(updatedLayout);
+    setBoxStyleMessage("Applied to all boxes.");
+  }
+
+  /** Called by react-grid-layout when items are moved or resized */
+  const handleLayoutChange = useCallback(
+    (rglLayout: Layout) => {
+      // Only persist when the user is actively editing
+      if (!isEditMode) return;
+      const updated = layout.map((section) => {
+        const item = rglLayout.find((l: LayoutItem) => l.i === section.id);
+        if (!item) return section;
+        return { ...section, x: item.x, y: item.y, w: item.w, h: item.h };
+      });
+      setLayout(updated);
+      // Debounce save to Supabase
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        if (!currentUserId) return;
+        supabase
+          .from("profiles")
+          .update({ profile_layout: updated })
+          .eq("id", currentUserId);
+      }, 500);
+    },
+    [currentUserId, isEditMode, layout]
+  );
+
+  function handleRemoveSection(sectionId: string) {
+    saveLayout(layout.filter((s) => s.id !== sectionId));
+  }
+
+  function handleAddSection(type: string, title: string) {
+    const id = `${type}-${Date.now()}`;
+    const data =
+      type === "text"
+        ? { content: "" }
+        : type === "vinyl" || type === "cd"
+          ? {}
+          : type === "custom-playlist"
+            ? { tracks: [] }
+            : type === "concert-ticket"
+              ? {
+                  artist: "",
+                  tourName: "",
+                  albumName: "",
+                  venue: "",
+                  city: "",
+                  date: "",
+                  year: "",
+                  row: "",
+                  section: "",
+                  seat: "",
+                  notes: "",
+                  borderPrimary: "#e11d48",
+                  borderSecondary: "#9ca3af",
+                }
+            : undefined;
+    // Place new section at the bottom, 2 columns wide
+    const maxY = layout.reduce((max, s) => Math.max(max, s.y + s.h), 0);
+    const size = getDefaultSectionSize(type);
+    saveLayout([
+      ...layout,
+      { id, type, title, x: 0, y: maxY, w: size.w, h: size.h, data },
+    ]);
+  }
+
+  async function handleAutoFitTextSections() {
+    if (!isEditMode || isAutoFitting) return;
+    setIsAutoFitting(true);
+
+    const updated = layout.map((section) => {
+      // Text sections: true content-based measurement.
+      if (section.type === "text") {
+        const content = (section.data?.content as string) || "";
+        const size = getDynamicTextSectionSize(section.title, content);
+        return { ...section, w: size.w, h: size.h };
+      }
+
+      // Other sections: snap to tuned defaults so auto-fit has visible effect.
+      const size = getDefaultSectionSize(section.type);
+      return { ...section, h: size.h };
+    });
+
+    await saveLayout(updated);
+    setIsAutoFitting(false);
+  }
+
+  function updateSectionData(sectionId: string, data: Record<string, unknown>, newTitle?: string) {
+    saveLayout(
+      layout.map((s) =>
+        s.id === sectionId
+          ? { ...s, data, ...(newTitle !== undefined ? { title: newTitle } : {}) }
+          : s
+      )
+    );
+  }
+
+  function updateSectionTitle(sectionId: string, title: string) {
+    saveLayout(
+      layout.map((s) => (s.id === sectionId ? { ...s, title } : s))
+    );
+  }
+
+  /* ───── Section renderers ───── */
+
+  function renderSectionContent(section: LayoutSection) {
+    const theme = getSectionTheme(section);
+    switch (section.type) {
+      case "recent-ratings":
+        return renderRecentRatings(theme);
+      case "favorite-tracks":
+        return renderFavoriteTracks(theme);
+      case "favorite-albums":
+        return renderFavoriteAlbums(theme);
+      case "vinyl":
+        return (
+          <VinylPlayer
+            title={section.title}
+            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; preview_url?: string | null }) || null}
+            variant="vinyl"
+            colors={(section.data?.colors as Record<string, string>) || undefined}
+            isOwnProfile={isOwnProfile}
+            canCustomize={canCustomizeSections}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
+            onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+          />
+        );
+      case "cd":
+        return (
+          <VinylPlayer
+            title={section.title}
+            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; preview_url?: string | null }) || null}
+            variant="cd"
+            colors={(section.data?.colors as Record<string, string>) || undefined}
+            isOwnProfile={isOwnProfile}
+            canCustomize={canCustomizeSections}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
+            onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+          />
+        );
+      case "text":
+        return (
+          <TextSection
+            title={section.title}
+            content={(section.data?.content as string) || ""}
+            isOwnProfile={isOwnProfile}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            onSave={(title, content) => {
+              const size = getDynamicTextSectionSize(title, content);
+              saveLayout(
+                layout.map((s) =>
+                  s.id === section.id
+                    ? { ...s, title, data: { content }, w: size.w, h: size.h }
+                    : s
+                )
+              );
+            }}
+          />
+        );
+      case "custom-playlist":
+        return (
+          <CustomPlaylistSection
+            title={section.title}
+            tracks={(section.data?.tracks as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null }[]) || []}
+            isOwnProfile={isOwnProfile}
+            canCustomize={canCustomizeSections}
+            accentTextColor={theme.accentTextColor}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            innerBackgroundColor={hexToRgba(theme.innerBgColor, theme.innerBgOpacity)}
+            onUpdateTitle={(title) => updateSectionTitle(section.id, title)}
+            onAddTrack={(track) => {
+              const tracks = [...((section.data?.tracks as unknown[]) || []), track];
+              updateSectionData(section.id, { ...section.data, tracks });
+            }}
+            onRemoveTrack={(spotifyTrackId) => {
+              const tracks = ((section.data?.tracks as { spotify_track_id: string }[]) || []).filter(
+                (t) => t.spotify_track_id !== spotifyTrackId
+              );
+              updateSectionData(section.id, { ...section.data, tracks });
+            }}
+          />
+        );
+      case "concert-ticket":
+        return (
+          <ConcertTicketStubSection
+            title={section.title}
+            data={
+              (section.data as {
+                artist?: string;
+                tourName?: string;
+                albumName?: string;
+                venue?: string;
+                city?: string;
+                date?: string;
+                year?: string;
+                row?: string;
+                section?: string;
+                seat?: string;
+                notes?: string;
+                borderPrimary?: string;
+                borderSecondary?: string;
+              }) || {}
+            }
+            isOwnProfile={isOwnProfile}
+            canCustomize={canCustomizeSections}
+            accentTextColor={theme.accentTextColor}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            innerBackgroundColor={hexToRgba(theme.innerBgColor, theme.innerBgOpacity)}
+            onSave={(title, data) => {
+              updateSectionData(section.id, { ...section.data, ...data }, title);
+            }}
+          />
+        );
+      default:
+        return null;
+    }
+  }
+
+  function renderRecentRatings(theme: SectionTheme) {
+    return (
+      <section className="h-full rounded-2xl p-5 shadow-lg" style={{ backgroundColor: hexToRgba(theme.outerBgColor, theme.outerBgOpacity) }}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold" style={{ color: theme.accentTextColor }}>Recent Ratings</h2>
+          <div className="flex gap-2">
+            {canCustomizeSections && (
+              <Link href="/rate" className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+                Rate
+              </Link>
+            )}
+            <Link href={`/profile/${profile!.username}/ratings`} className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+              View All
+            </Link>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {recentRatings.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">No song ratings yet.</div>
+          ) : (
+            recentRatings.map((rating) => (
+              <div key={rating.id} className="rounded-lg p-3 min-h-[7rem]" style={{ backgroundColor: hexToRgba(theme.innerBgColor, theme.innerBgOpacity) }}>
+                {editingRatingId === rating.id ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      {rating.image_url ? (<img src={rating.image_url} alt={rating.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-white">{rating.track_name}</p>
+                        <p className="truncate text-xs text-zinc-400">{rating.artist_name}</p>
+                      </div>
+                    </div>
+                    <select value={editRatingValue} onChange={(e) => setEditRatingValue(e.target.value)} className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none">
+                      {[0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) => (<option key={v} value={v}>{v} — {formatNotesText(v)}</option>))}
+                    </select>
+                    <textarea value={editReviewValue} onChange={(e) => setEditReviewValue(e.target.value)} rows={2} placeholder="Review (optional)" className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none" />
+                    <div className="flex gap-1">
+                      <button onClick={() => handleSaveRating(rating.id)} disabled={ratingBusy !== ""} className="rounded bg-green-500 px-2 py-1 text-xs font-semibold text-black hover:bg-green-600 disabled:opacity-50">Save</button>
+                      <button onClick={cancelEditRating} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3">
+                      {rating.image_url ? (<img src={rating.image_url} alt={rating.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-white">{rating.track_name}</p>
+                        <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{rating.artist_name}</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-sm font-semibold" style={{ color: theme.accentTextColor }}><NoteRating rating={rating.rating} /></p>
+                        <p className="text-xs" style={{ color: theme.accentTextColor }}>{rating.rating}/5</p>
+                      </div>
+                    </div>
+                    {rating.review && (<p className="mt-1.5 truncate text-xs italic" style={{ color: theme.accentTextColor }}>&ldquo;{rating.review}&rdquo;</p>)}
+                    {canCustomizeSections && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1">
+                        <button onClick={() => startEditRating(rating)} disabled={ratingBusy !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">✎</button>
+                        <button onClick={() => handleDeleteRating(rating.id)} disabled={ratingBusy !== ""} className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">✕</button>
+                        {rating.spotify_track_id && (<a href={`https://open.spotify.com/track/${rating.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>)}
+                      </div>
+                    )}
+                    {!canCustomizeSections && rating.spotify_track_id && (
+                      <div className="mt-2 flex justify-end">
+                        <a href={`https://open.spotify.com/track/${rating.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  function renderFavoriteTracks(theme: SectionTheme) {
+    return (
+      <section className="h-full rounded-2xl p-5 shadow-lg" style={{ backgroundColor: hexToRgba(theme.outerBgColor, theme.outerBgOpacity) }}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold" style={{ color: theme.accentTextColor }}>Favorite Tracks</h2>
+          {canCustomizeSections && (
+            <button onClick={() => { setShowTrackForm((prev) => !prev); setTrackMessage(""); setTrackResults([]); setSelectedTrack(null); setTrackSearch(""); }} className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+              {showTrackForm ? "Close" : "Add Track"}
+            </button>
+          )}
+        </div>
+        {canCustomizeSections && showTrackForm && (
+          <div className="mb-6 space-y-4">
+            <form className="space-y-3" onSubmit={handleTrackSearch}>
+              <input type="text" placeholder="Search for a track" value={trackSearch} onChange={(e) => setTrackSearch(e.target.value)} className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500" />
+              <button type="submit" disabled={trackSearchLoading} className="w-full rounded-lg border border-zinc-700 px-4 py-3 font-semibold text-zinc-200 hover:bg-zinc-800 disabled:opacity-60">{trackSearchLoading ? "Searching..." : "Search Tracks"}</button>
+            </form>
+            {trackResults.length > 0 && (
+              <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                {trackResults.map((track) => (
+                  <button key={track.spotify_track_id} type="button" onClick={() => setSelectedTrack(track)} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${selectedTrack?.spotify_track_id === track.spotify_track_id ? "bg-green-500/20 ring-1 ring-green-500" : "bg-zinc-800/60 hover:bg-zinc-800"}`}>
+                    {track.image_url ? (<img src={track.image_url} alt={track.track_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-white">{track.track_name}</p>
+                      <p className="truncate text-sm text-zinc-400">{track.artist_name}</p>
+                      {track.album_name && (<p className="truncate text-xs text-zinc-500">{track.album_name}</p>)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            <form onSubmit={handleAddFavoriteTrack} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+              {selectedTrack ? (
+                <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
+                  {selectedTrack.image_url ? (<img src={selectedTrack.image_url} alt={selectedTrack.track_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-white">{selectedTrack.track_name}</p>
+                    <p className="truncate text-sm text-zinc-400">{selectedTrack.artist_name}</p>
+                    {selectedTrack.album_name && (<p className="truncate text-xs text-zinc-500">{selectedTrack.album_name}</p>)}
+                  </div>
+                </div>
+              ) : (<p className="text-sm text-zinc-400">Select a track above first.</p>)}
+              <select value={trackPosition} onChange={(e) => setTrackPosition(e.target.value)} className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500">
+                <option value="1">Position #1</option><option value="2">Position #2</option><option value="3">Position #3</option><option value="4">Position #4</option><option value="5">Position #5</option>
+              </select>
+              <button type="submit" disabled={trackSubmitting} className="w-full rounded-lg bg-green-500 px-4 py-3 font-semibold text-black transition hover:bg-green-600 disabled:opacity-60">{trackSubmitting ? "Saving..." : "Save Favorite Track"}</button>
+              {trackMessage && (<p className="text-sm text-zinc-300">{trackMessage}</p>)}
+            </form>
+          </div>
+        )}
+        <div className="space-y-2">
+          {favoriteTracks.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">No favorite tracks yet.</div>
+          ) : (
+            favoriteTracks.map((track) => (
+              <div key={track.id} className="rounded-lg p-3 min-h-[7rem]" style={{ backgroundColor: hexToRgba(theme.innerBgColor, theme.innerBgOpacity) }}>
+                <div className="flex items-center gap-3">
+                  {track.image_url ? (<img src={track.image_url} alt={track.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-white">{track.track_name}</p>
+                    <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{track.artist_name}</p>
+                  </div>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold text-black" style={{ backgroundColor: theme.accentTextColor }}>{track.position}</div>
+                </div>
+                <p className="mt-1.5 text-xs text-transparent">&nbsp;</p>
+                {canCustomizeSections && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <button onClick={() => moveTrackUp(track)} disabled={track.position === 1 || busyAction !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">↑</button>
+                    <button onClick={() => moveTrackDown(track)} disabled={track.position === 5 || busyAction !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">↓</button>
+                    <button onClick={() => handleDeleteFavoriteTrack(track.id)} disabled={busyAction !== ""} className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">✕</button>
+                    {track.spotify_track_id && (<a href={`https://open.spotify.com/track/${track.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>)}
+                  </div>
+                )}
+                {!canCustomizeSections && track.spotify_track_id && (
+                  <div className="mt-2 flex justify-end">
+                    <a href={`https://open.spotify.com/track/${track.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  function renderFavoriteAlbums(theme: SectionTheme) {
+    return (
+      <section className="h-full rounded-2xl p-5 shadow-lg" style={{ backgroundColor: hexToRgba(theme.outerBgColor, theme.outerBgOpacity) }}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold" style={{ color: theme.accentTextColor }}>Favorite Albums</h2>
+          {canCustomizeSections && (
+            <button onClick={() => { setShowAlbumForm((prev) => !prev); setAlbumMessage(""); setAlbumResults([]); setSelectedAlbum(null); setAlbumSearch(""); }} className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+              {showAlbumForm ? "Close" : "Add Album"}
+            </button>
+          )}
+        </div>
+        {canCustomizeSections && showAlbumForm && (
+          <div className="mb-6 space-y-4">
+            <form className="space-y-3" onSubmit={handleAlbumSearch}>
+              <input type="text" placeholder="Search for an album" value={albumSearch} onChange={(e) => setAlbumSearch(e.target.value)} className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500" />
+              <button type="submit" disabled={albumSearchLoading} className="w-full rounded-lg border border-zinc-700 px-4 py-3 font-semibold text-zinc-200 hover:bg-zinc-800 disabled:opacity-60">{albumSearchLoading ? "Searching..." : "Search Albums"}</button>
+            </form>
+            {albumResults.length > 0 && (
+              <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                {albumResults.map((album) => (
+                  <button key={album.spotify_album_id} type="button" onClick={() => setSelectedAlbum(album)} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${selectedAlbum?.spotify_album_id === album.spotify_album_id ? "bg-green-500/20 ring-1 ring-green-500" : "bg-zinc-800/60 hover:bg-zinc-800"}`}>
+                    {album.image_url ? (<img src={album.image_url} alt={album.album_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-white">{album.album_name}</p>
+                      <p className="truncate text-sm text-zinc-400">{album.artist_name}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            <form onSubmit={handleAddFavoriteAlbum} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+              {selectedAlbum ? (
+                <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
+                  {selectedAlbum.image_url ? (<img src={selectedAlbum.image_url} alt={selectedAlbum.album_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-white">{selectedAlbum.album_name}</p>
+                    <p className="truncate text-sm text-zinc-400">{selectedAlbum.artist_name}</p>
+                  </div>
+                </div>
+              ) : (<p className="text-sm text-zinc-400">Select an album above first.</p>)}
+              <select value={albumPosition} onChange={(e) => setAlbumPosition(e.target.value)} className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500">
+                <option value="1">Position #1</option><option value="2">Position #2</option><option value="3">Position #3</option><option value="4">Position #4</option><option value="5">Position #5</option>
+              </select>
+              <button type="submit" disabled={albumSubmitting} className="w-full rounded-lg bg-green-500 px-4 py-3 font-semibold text-black transition hover:bg-green-600 disabled:opacity-60">{albumSubmitting ? "Saving..." : "Save Favorite Album"}</button>
+              {albumMessage && (<p className="text-sm text-zinc-300">{albumMessage}</p>)}
+            </form>
+          </div>
+        )}
+        <div className="space-y-2">
+          {favoriteAlbums.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">No favorite albums yet.</div>
+          ) : (
+            favoriteAlbums.map((album) => (
+              <div key={album.id} className="rounded-lg p-3 min-h-[7rem]" style={{ backgroundColor: hexToRgba(theme.innerBgColor, theme.innerBgOpacity) }}>
+                <div className="flex items-center gap-3">
+                  {album.image_url ? (<img src={album.image_url} alt={album.album_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-white">{album.album_name}</p>
+                    <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{album.artist_name}</p>
+                  </div>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold text-black" style={{ backgroundColor: theme.accentTextColor }}>{album.position}</div>
+                </div>
+                <p className="mt-1.5 text-xs text-transparent">&nbsp;</p>
+                {canCustomizeSections && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <button onClick={() => moveAlbumUp(album)} disabled={album.position === 1 || busyAction !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">↑</button>
+                    <button onClick={() => moveAlbumDown(album)} disabled={album.position === 5 || busyAction !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">↓</button>
+                    <button onClick={() => handleDeleteFavoriteAlbum(album.id)} disabled={busyAction !== ""} className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">✕</button>
+                    {album.spotify_album_id && (<a href={`https://open.spotify.com/album/${album.spotify_album_id}`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>)}
+                  </div>
+                )}
+                {!canCustomizeSections && album.spotify_album_id && (
+                  <div className="mt-2 flex justify-end">
+                    <a href={`https://open.spotify.com/album/${album.spotify_album_id}`} target="_blank" rel="noopener noreferrer" className="text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+    );
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen text-white flex items-center justify-center">
@@ -919,11 +2197,428 @@ export default function ProfilePage() {
   }
 
   return (
-    <main className="min-h-screen px-6 py-8 text-white">
+    <main className="min-h-screen overflow-x-hidden px-6 py-8 text-white">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-        <div className="rounded-2xl bg-zinc-900 p-8 shadow-lg">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-5">
+
+        {/* ── Top nav row ── sits above the profile card, right-aligned in the black space */}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {isOwnProfile ? (
+            <TopNav
+              showMyProfile={false}
+              myProfileUsername={currentUsername}
+              showFeed
+              showUsers
+              showRate
+              showLogout
+              onLogout={handleLogout}
+              showAdmin={isCurrentUserAdmin}
+              isAdmin={isCurrentUserAdmin}
+            />
+          ) : (
+            <>
+              <TopNav
+                showMyProfile
+                myProfileUsername={currentUsername}
+                showFeed
+                showUsers
+                showRate
+                showProfile={false}
+                showAdmin={isCurrentUserAdmin}
+                isAdmin={isCurrentUserAdmin}
+              />
+              {currentUserId && (
+                <button
+                  onClick={handleToggleFollow}
+                  disabled={followBusy}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                    isFollowing
+                      ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                      : "bg-green-500 text-black hover:bg-green-600"
+                  } disabled:opacity-60`}
+                >
+                  {followBusy ? "Working..." : isFollowing ? "Following" : "Follow"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Admin action strip — only shown to admins viewing someone else's profile */}
+        {isCurrentUserAdmin && !isOwnProfile && profile && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-900 bg-blue-950/30 px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-blue-400">🛡️ Admin</span>
+            <button
+              onClick={handleAdminBanToggle}
+              disabled={adminActionBusy}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition disabled:opacity-60 ${
+                profile.is_banned
+                  ? "bg-green-700 text-white hover:bg-green-600"
+                  : "bg-yellow-700 text-white hover:bg-yellow-600"
+              }`}
+            >
+              {adminActionBusy ? "Working..." : profile.is_banned ? "Unban User" : "Ban User"}
+            </button>
+            <button
+              onClick={handleAdminDelete}
+              disabled={adminActionBusy}
+              className="rounded-lg bg-red-800 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+            >
+              {adminActionBusy ? "Working..." : "Delete User"}
+            </button>
+            {adminActionMessage && <span className="text-sm text-zinc-300">{adminActionMessage}</span>}
+          </div>
+        )}
+
+        <div className="relative rounded-2xl p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+          {isOwnProfile && (
+            <div className="mb-4 flex items-center justify-end gap-2">
+              {isEditMode && (
+                <button
+                  onClick={() => setShowStickerToolbar((prev) => !prev)}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                    showStickerToolbar
+                      ? "bg-purple-600 text-white hover:bg-purple-700"
+                      : "border border-purple-600 text-purple-300 hover:bg-purple-900/30"
+                  }`}
+                >
+                  🎨 Stickers
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  if (isEditMode) {
+                    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+                    saveLayout(layout);
+                  }
+                  setIsEditMode(!isEditMode);
+                }}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                  isEditMode
+                    ? "bg-green-500 text-black hover:bg-green-600"
+                    : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                }`}
+              >
+                {isEditMode ? "Done Customizing" : "Customize Profile"}
+              </button>
+            </div>
+          )}
+
+          {isOwnProfile && isEditMode && (
+            <>
+              <div className="absolute -left-[18.5rem] top-0 z-30 hidden h-full w-72 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-950/95 p-3 shadow-xl backdrop-blur xl:block">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    onClick={() => setShowAddSection(true)}
+                    className="h-9 rounded-lg border border-green-500 px-3 py-2 text-xs font-semibold text-green-300 hover:bg-green-500/10"
+                  >
+                    + Add Section
+                  </button>
+                  <button
+                    onClick={handleAutoFitTextSections}
+                    disabled={isAutoFitting}
+                    className="h-9 rounded-lg border border-green-500 px-3 py-2 text-xs font-semibold text-green-300 hover:bg-green-500/10 disabled:opacity-60"
+                    title="Auto-fit section heights"
+                  >
+                    {isAutoFitting ? "Fitting..." : "Auto-fit Boxes"}
+                  </button>
+
+                  <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2">
+                    <p className="mb-1 text-[11px] font-semibold text-zinc-300">Notes</p>
+                    <p className="mb-2 text-[10px] text-zinc-500">Falling background notes</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="note-color"
+                        type="color"
+                        value={noteColor}
+                        onChange={(e) => setNoteColor(e.target.value)}
+                        className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                        title="Background note color"
+                      />
+                      <button
+                        onClick={handleSaveNoteColor}
+                        disabled={noteColorSaving}
+                        className="rounded border border-green-500 px-2 py-1 text-xs font-semibold text-green-400 hover:bg-green-500/10 disabled:opacity-60"
+                      >
+                        {noteColorSaving ? "..." : "Save"}
+                      </button>
+                    </div>
+                    {noteColorMessage && <p className="mt-1 text-[11px] text-zinc-400">{noteColorMessage}</p>}
+                  </div>
+
+                  <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2">
+                    <p className="mb-1 text-[11px] font-semibold text-zinc-300">Accent Text</p>
+                    <p className="mb-2 text-[10px] text-zinc-500">Board headings and rating accents</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="accent-text-color"
+                        type="color"
+                        value={accentTextColor}
+                        onChange={(e) => setAccentTextColor(e.target.value)}
+                        className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                        title="Accent text color"
+                      />
+                      <button
+                        onClick={handleSaveAccentTextColor}
+                        disabled={accentTextSaving}
+                        className="rounded border border-green-500 px-2 py-1 text-xs font-semibold text-green-300 hover:bg-green-500/10 disabled:opacity-60"
+                      >
+                        {accentTextSaving ? "..." : "Save"}
+                      </button>
+                    </div>
+                    {accentTextMessage && <p className="mt-1 text-[11px] text-zinc-400">{accentTextMessage}</p>}
+                  </div>
+
+                  <div className="col-span-2 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2">
+                    <p className="mb-1 text-[11px] font-semibold text-zinc-300">Profile Box & Pattern</p>
+                    <p className="mb-2 text-[10px] text-zinc-500">Box color/opacity + top-card pattern (bio stays clean)</p>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-[84px_minmax(0,1fr)_46px] items-center gap-2">
+                        <label className="text-[11px] text-zinc-400">Box Color</label>
+                        <div className="h-px" />
+                        <div className="flex justify-end">
+                          <input
+                            type="color"
+                            value={profileBoxBgColor}
+                            onChange={(e) => setProfileBoxBgColor(e.target.value)}
+                            className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                            title="Profile box background color"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[84px_minmax(0,1fr)_46px] items-center gap-2">
+                        <label className="text-[11px] text-zinc-400">Opacity</label>
+                        <input
+                          type="range"
+                          min={10}
+                          max={100}
+                          value={Math.round(profileBoxBgOpacity * 100)}
+                          onChange={(e) => setProfileBoxBgOpacity(Number(e.target.value) / 100)}
+                          title="Profile box background opacity"
+                        />
+                        <span className="text-right text-xs text-zinc-400">{Math.round(profileBoxBgOpacity * 100)}%</span>
+                      </div>
+
+                      <div className="grid grid-cols-[84px_minmax(0,1fr)_46px] items-center gap-2">
+                        <label htmlFor="profile-card-pattern" className="text-[11px] text-zinc-400">Pattern</label>
+                        <select
+                          id="profile-card-pattern"
+                          value={profileCardPattern}
+                          onChange={(e) => setProfileCardPattern(e.target.value as ProfileCardPattern)}
+                          className="min-w-0 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none"
+                        >
+                          <option value="none">None</option>
+                          <option value="dots">Dots</option>
+                          <option value="grid">Grid</option>
+                          <option value="diagonal">Diagonal</option>
+                          <option value="waves">Waves</option>
+                          <option value="crosshatch">Crosshatch</option>
+                        </select>
+                        <div className="flex justify-end">
+                          <input
+                            type="color"
+                            value={profileCardPatternColor}
+                            onChange={(e) => setProfileCardPatternColor(e.target.value)}
+                            className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                            title="Profile card pattern color"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[84px_minmax(0,1fr)_46px] items-center gap-2">
+                        <label className="text-[11px] text-zinc-400">Pattern %</label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={60}
+                          value={Math.round(profileCardPatternOpacity * 100)}
+                          onChange={(e) => setProfileCardPatternOpacity(Number(e.target.value) / 100)}
+                          title="Profile card pattern opacity"
+                        />
+                        <span className="text-right text-xs text-zinc-400">{Math.round(profileCardPatternOpacity * 100)}%</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      <div
+                        className="mr-auto h-4 w-4 rounded border border-zinc-600"
+                        style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}
+                        title="Profile box preview"
+                      />
+                      <button
+                        onClick={handleSaveProfileCardPattern}
+                        disabled={profilePatternSaving}
+                        className="h-8 rounded border border-green-500 px-2 py-1 text-xs font-semibold text-green-300 hover:bg-green-500/10 disabled:opacity-60"
+                      >
+                        {profilePatternSaving ? "Saving..." : "Save Pattern"}
+                      </button>
+                    </div>
+                    {profilePatternMessage && <p className="mt-1 text-[11px] text-zinc-400">{profilePatternMessage}</p>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="absolute -right-[20.5rem] top-0 z-30 hidden h-full w-80 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-950/95 p-3 shadow-xl backdrop-blur xl:block">
+                <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2">
+                  <p className="mb-1 text-[11px] font-semibold text-zinc-300">Box Styles</p>
+                  <p className="mb-2 text-[10px] text-zinc-500">Customize selected section or all sections</p>
+
+                  <div className="grid grid-cols-[84px_minmax(0,1fr)_46px] items-center gap-2">
+                    <label htmlFor="box-style-target" className="text-[11px] text-zinc-400">Target</label>
+                    <select
+                      id="box-style-target"
+                      value={styleTargetSectionId}
+                      onChange={(e) => {
+                        setStyleTargetSectionId(e.target.value);
+                        setBoxStyleMessage("");
+                      }}
+                      className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none"
+                    >
+                      <option value="all">All Boxes</option>
+                      {layout.map((section) => (
+                        <option key={section.id} value={section.id}>{section.title}</option>
+                      ))}
+                    </select>
+                    <div className="flex justify-end">
+                      <input
+                        type="color"
+                        value={boxAccentDraft}
+                        onChange={(e) => {
+                          setBoxAccentDraft(e.target.value);
+                          setBoxStyleMessage("");
+                        }}
+                        className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                        title="Box accent color"
+                      />
+                    </div>
+
+                    <label className="text-[11px] text-zinc-400">Accent</label>
+                    <div className="h-px" />
+                    <span className="text-right text-xs text-zinc-500">&nbsp;</span>
+
+                    <label className="text-[11px] text-zinc-400">Outer Color</label>
+                    <div className="h-px" />
+                    <div className="flex justify-end">
+                      <input
+                        type="color"
+                        value={boxOuterBgColorDraft}
+                        onChange={(e) => {
+                          setBoxOuterBgColorDraft(e.target.value);
+                          setBoxStyleMessage("");
+                        }}
+                        className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                        title="Outer panel color"
+                      />
+                    </div>
+
+                    <label className="text-[11px] text-zinc-400">Outer Opacity</label>
+                    <input
+                      type="range"
+                      min={10}
+                      max={100}
+                      value={Math.round(boxOuterBgOpacityDraft * 100)}
+                      onChange={(e) => {
+                        setBoxOuterBgOpacityDraft(Number(e.target.value) / 100);
+                        setBoxStyleMessage("");
+                      }}
+                      title="Panel opacity"
+                    />
+                    <span className="text-right text-xs text-zinc-400">{Math.round(boxOuterBgOpacityDraft * 100)}%</span>
+
+                    <label className="text-[11px] text-zinc-400">Inner Color</label>
+                    <div className="h-px" />
+                    <div className="flex justify-end">
+                      <input
+                        type="color"
+                        value={boxInnerBgColorDraft}
+                        onChange={(e) => {
+                          setBoxInnerBgColorDraft(e.target.value);
+                          setBoxStyleMessage("");
+                        }}
+                        className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                        title="Inner card/button color"
+                      />
+                    </div>
+
+                    <label className="text-[11px] text-zinc-400">Inner Opacity</label>
+                    <input
+                      type="range"
+                      min={10}
+                      max={100}
+                      value={Math.round(boxInnerBgOpacityDraft * 100)}
+                      onChange={(e) => {
+                        setBoxInnerBgOpacityDraft(Number(e.target.value) / 100);
+                        setBoxStyleMessage("");
+                      }}
+                      title="Inner card/button opacity"
+                    />
+                    <span className="text-right text-xs text-zinc-400">{Math.round(boxInnerBgOpacityDraft * 100)}%</span>
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        if (styleTargetSectionId === "all") {
+                          applyBoxStyleToAllSections();
+                          return;
+                        }
+                        applyBoxStyleToSection(styleTargetSectionId);
+                      }}
+                      className="h-8 rounded border border-green-500 px-2 py-1 text-xs font-semibold text-green-300 hover:bg-green-500/10"
+                    >
+                      Apply Selected
+                    </button>
+                    <button
+                      onClick={applyBoxStyleToAllSections}
+                      className="h-8 rounded border border-zinc-600 px-2 py-1 text-xs font-semibold text-zinc-300 hover:bg-zinc-800"
+                    >
+                      Apply All
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-3">
+                    <span className="text-[11px] text-zinc-500">Preview</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-zinc-400">Outer</span>
+                      <div
+                        className="h-4 w-4 rounded border border-zinc-600"
+                        style={{ backgroundColor: hexToRgba(boxOuterBgColorDraft, boxOuterBgOpacityDraft) }}
+                        title="Outer panel preview"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-zinc-400">Inner</span>
+                      <div
+                        className="h-4 w-4 rounded border border-zinc-600"
+                        style={{ backgroundColor: hexToRgba(boxInnerBgColorDraft, boxInnerBgOpacityDraft) }}
+                        title="Inner card preview"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-zinc-400">Accent</span>
+                      <div
+                        className="h-4 w-4 rounded-full border border-zinc-600"
+                        style={{ backgroundColor: boxAccentDraft }}
+                        title="Accent preview"
+                      />
+                    </div>
+                  </div>
+                  {boxStyleMessage && <p className="mt-1 text-[11px] text-zinc-400">{boxStyleMessage}</p>}
+                </div>
+              </div>
+            </>
+          )}
+          <div className="relative overflow-hidden rounded-xl">
+            {profileCardPattern !== "none" && (
+              <div
+                className="pointer-events-none absolute inset-0 z-0"
+                style={getProfileCardPatternStyle(
+                  profileCardPattern,
+                  profileCardPatternColor,
+                  profileCardPatternOpacity
+                )}
+              />
+            )}
+            <div className="relative z-10">
+              <div className="flex items-center gap-5">
               <div className="relative group">
                 {profile.avatar_url ? (
                   <img
@@ -932,7 +2627,7 @@ export default function ProfilePage() {
                     className="h-20 w-20 rounded-full object-cover"
                   />
                 ) : (
-                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-zinc-800 text-3xl font-bold text-green-400">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-zinc-800 text-3xl font-bold" style={{ color: accentTextColor }}>
                     {profile.display_name?.[0]?.toUpperCase() ||
                       profile.username?.[0]?.toUpperCase() ||
                       "U"}
@@ -982,6 +2677,16 @@ export default function ProfilePage() {
                     <h1 className="text-3xl font-bold">
                       {profile.display_name || profile.username}
                     </h1>
+                    {/* Shield badge — visible to everyone when this user is an admin */}
+                    {profile.is_admin && (
+                      <span
+                        title="Admin"
+                        className="text-blue-400 text-2xl"
+                        aria-label="Admin"
+                      >
+                        🛡️
+                      </span>
+                    )}
                     {isOwnProfile && (
                       <button
                         onClick={() => {
@@ -1015,43 +2720,10 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {isOwnProfile ? (
-              <TopNav
-                showMyProfile={false}
-                myProfileUsername={currentUsername}
-                showFeed
-                showUsers
-                showRate
-                showLogout
-                onLogout={handleLogout}
-              />
-            ) : (
-              <div className="flex flex-wrap gap-3">
-                <TopNav
-                  showMyProfile
-                  myProfileUsername={currentUsername}
-                  showFeed
-                  showUsers
-                  showRate
-                  showProfile={false}
-                />
-
-                <button
-                  onClick={handleToggleFollow}
-                  disabled={followBusy}
-                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                    isFollowing
-                      ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-                      : "bg-green-500 text-black hover:bg-green-600"
-                  } disabled:opacity-60`}
-                >
-                  {followBusy ? "Working..." : isFollowing ? "Following" : "Follow"}
-                </button>
-              </div>
-            )}
+            </div>
           </div>
 
-          <div className="mt-6 border-t border-zinc-800 pt-6">
+          <div className="mt-6 border-t pt-6" style={{ borderTopColor: profileCardPatternColor }}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">Bio</h2>
 
@@ -1113,631 +2785,79 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-bold">Recent Ratings</h2>
+        {showAddSection && (
+          <AddSectionModal
+            existingTypes={layout.map((s) => s.type)}
+            onAdd={handleAddSection}
+            onClose={() => setShowAddSection(false)}
+          />
+        )}
+      </div>
 
-              <div className="flex gap-2">
-                {isOwnProfile && (
-                  <Link
-                    href="/rate"
-                    className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+      {/* Grid layout — full-width, outside the constrained container */}
+      <div
+        className={`relative left-1/2 w-screen -translate-x-1/2 ${isEditMode ? "profile-grid-overlay" : ""}`}
+      >
+        {/* Sticker layer sits absolutely over the grid; pointer-events:none in view mode */}
+        <StickerLayer
+          stickers={placedStickers}
+          customStickers={userCustomStickers}
+          isEditMode={isEditMode && isOwnProfile}
+          showToolbar={showStickerToolbar}
+          userId={currentUserId}
+          onChange={handleStickersChange}
+          onUploadSticker={handleUploadSticker}
+        />
+        <ResponsiveGridLayout
+          className="layout"
+          width={viewportWidth}
+          layouts={{
+            lg: layout.map((s) => ({
+              i: s.id,
+              x: s.x,
+              y: s.y,
+              w: s.w,
+              h: s.h,
+              minW: 1,
+              minH: 2,
+            })),
+          }}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 0 }}
+          cols={{ lg: 12, md: 12, sm: 12, xs: 12 }}
+          rowHeight={GRID_ROW_HEIGHT}
+          dragConfig={{ enabled: isEditMode, handle: ".grid-drag-handle" }}
+          resizeConfig={{ enabled: isEditMode }}
+          compactor={verticalCompactor}
+          margin={[8, GRID_MARGIN_Y]}
+          onLayoutChange={(rglLayout) => handleLayoutChange(rglLayout)}
+        >
+          {layout.map((section) => (
+            <div key={section.id} className="relative flex h-full flex-col overflow-hidden rounded-xl bg-zinc-900">
+              {isEditMode && (
+                <div className="flex items-center gap-1 bg-zinc-800/80 px-2 py-1">
+                  <button
+                    className="grid-drag-handle cursor-grab rounded p-1 text-zinc-500 hover:text-zinc-300 active:cursor-grabbing"
+                    title="Drag to reorder"
                   >
-                    Rate
-                  </Link>
-                )}
-                <Link
-                  href={`/profile/${profile.username}/ratings`}
-                  className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-                >
-                  View All
-                </Link>
+                    ⠿
+                  </button>
+                  <div className="ml-auto flex gap-1">
+                    <button
+                      onClick={() => handleRemoveSection(section.id)}
+                      className="rounded border border-red-700 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950/40"
+                      title="Remove section"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="min-h-0 flex-1 overflow-auto p-3">
+                {renderSectionContent(section)}
               </div>
             </div>
-
-            <div className="space-y-2">
-              {recentRatings.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">
-                  No song ratings yet.
-                </div>
-              ) : (
-                recentRatings.map((rating) => (
-                  <div key={rating.id} className="rounded-lg bg-zinc-800/60 p-3 min-h-[7rem]">
-                    {editingRatingId === rating.id ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          {rating.image_url ? (
-                            <img
-                              src={rating.image_url}
-                              alt={rating.track_name}
-                              className="h-12 w-12 rounded object-cover"
-                            />
-                          ) : (
-                            <div className="h-12 w-12 rounded bg-zinc-700" />
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-white">
-                              {rating.track_name}
-                            </p>
-                            <p className="truncate text-xs text-zinc-400">
-                              {rating.artist_name}
-                            </p>
-                          </div>
-                        </div>
-
-                        <select
-                          value={editRatingValue}
-                          onChange={(e) => setEditRatingValue(e.target.value)}
-                          className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none"
-                        >
-                          {[0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) => (
-                            <option key={v} value={v}>{v} — {formatNotesText(v)}</option>
-                          ))}
-                        </select>
-
-                        <textarea
-                          value={editReviewValue}
-                          onChange={(e) => setEditReviewValue(e.target.value)}
-                          rows={2}
-                          placeholder="Review (optional)"
-                          className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-white outline-none"
-                        />
-
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => handleSaveRating(rating.id)}
-                            disabled={ratingBusy !== ""}
-                            className="rounded bg-green-500 px-2 py-1 text-xs font-semibold text-black hover:bg-green-600 disabled:opacity-50"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={cancelEditRating}
-                            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-3">
-                          {rating.image_url ? (
-                            <img
-                              src={rating.image_url}
-                              alt={rating.track_name}
-                              className="h-12 w-12 rounded object-cover"
-                            />
-                          ) : (
-                            <div className="h-12 w-12 rounded bg-zinc-700" />
-                          )}
-
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-white">
-                              {rating.track_name}
-                            </p>
-                            <p className="truncate text-xs text-zinc-400">
-                              {rating.artist_name}
-                            </p>
-                          </div>
-
-                          <div className="shrink-0 text-right">
-                            <p className="text-sm font-semibold text-green-400">
-                              <NoteRating rating={rating.rating} />
-                            </p>
-                            <p className="text-xs text-zinc-400">{rating.rating}/5</p>
-                          </div>
-                        </div>
-
-                        {rating.review && (
-                          <p className="mt-1.5 truncate text-xs italic text-zinc-400">
-                            &ldquo;{rating.review}&rdquo;
-                          </p>
-                        )}
-
-                        {isOwnProfile && (
-                          <div className="mt-2 flex flex-wrap items-center gap-1">
-                            <button
-                              onClick={() => startEditRating(rating)}
-                              disabled={ratingBusy !== ""}
-                              className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                            >
-                              ✎
-                            </button>
-                            <button
-                              onClick={() => handleDeleteRating(rating.id)}
-                              disabled={ratingBusy !== ""}
-                              className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
-                            >
-                              ✕
-                            </button>
-                            {rating.spotify_track_id && (
-                              <a
-                                href={`https://open.spotify.com/track/${rating.spotify_track_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="ml-auto text-xs text-green-400 hover:underline"
-                              >
-                                Listen on Spotify
-                              </a>
-                            )}
-                          </div>
-                        )}
-                        {!isOwnProfile && rating.spotify_track_id && (
-                          <div className="mt-2 flex justify-end">
-                            <a
-                              href={`https://open.spotify.com/track/${rating.spotify_track_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-green-400 hover:underline"
-                            >
-                              Listen on Spotify
-                            </a>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-
-          <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-bold">Favorite Tracks</h2>
-
-              {isOwnProfile && (
-                <button
-                  onClick={() => {
-                    setShowTrackForm((prev) => !prev);
-                    setTrackMessage("");
-                    setTrackResults([]);
-                    setSelectedTrack(null);
-                    setTrackSearch("");
-                  }}
-                  className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-                >
-                  {showTrackForm ? "Close" : "Add Track"}
-                </button>
-              )}
-            </div>
-
-            {isOwnProfile && showTrackForm && (
-              <div className="mb-6 space-y-4">
-                <form className="space-y-3" onSubmit={handleTrackSearch}>
-                  <input
-                    type="text"
-                    placeholder="Search for a track"
-                    value={trackSearch}
-                    onChange={(e) => setTrackSearch(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={trackSearchLoading}
-                    className="w-full rounded-lg border border-zinc-700 px-4 py-3 font-semibold text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
-                  >
-                    {trackSearchLoading ? "Searching..." : "Search Tracks"}
-                  </button>
-                </form>
-
-                {trackResults.length > 0 && (
-                  <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-                    {trackResults.map((track) => (
-                      <button
-                        key={track.spotify_track_id}
-                        type="button"
-                        onClick={() => setSelectedTrack(track)}
-                        className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${
-                          selectedTrack?.spotify_track_id === track.spotify_track_id
-                            ? "bg-green-500/20 ring-1 ring-green-500"
-                            : "bg-zinc-800/60 hover:bg-zinc-800"
-                        }`}
-                      >
-                        {track.image_url ? (
-                          <img
-                            src={track.image_url}
-                            alt={track.track_name}
-                            className="h-16 w-16 rounded-lg object-cover"
-                          />
-                        ) : (
-                          <div className="h-16 w-16 rounded-lg bg-zinc-700" />
-                        )}
-
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-white">
-                            {track.track_name}
-                          </p>
-                          <p className="truncate text-sm text-zinc-400">
-                            {track.artist_name}
-                          </p>
-                          {track.album_name && (
-                            <p className="truncate text-xs text-zinc-500">
-                              {track.album_name}
-                            </p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <form
-                  onSubmit={handleAddFavoriteTrack}
-                  className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4"
-                >
-                  {selectedTrack ? (
-                    <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
-                      {selectedTrack.image_url ? (
-                        <img
-                          src={selectedTrack.image_url}
-                          alt={selectedTrack.track_name}
-                          className="h-16 w-16 rounded-lg object-cover"
-                        />
-                      ) : (
-                        <div className="h-16 w-16 rounded-lg bg-zinc-700" />
-                      )}
-
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold text-white">
-                          {selectedTrack.track_name}
-                        </p>
-                        <p className="truncate text-sm text-zinc-400">
-                          {selectedTrack.artist_name}
-                        </p>
-                        {selectedTrack.album_name && (
-                          <p className="truncate text-xs text-zinc-500">
-                            {selectedTrack.album_name}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-zinc-400">
-                      Select a track above first.
-                    </p>
-                  )}
-
-                  <select
-                    value={trackPosition}
-                    onChange={(e) => setTrackPosition(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="1">Position #1</option>
-                    <option value="2">Position #2</option>
-                    <option value="3">Position #3</option>
-                    <option value="4">Position #4</option>
-                    <option value="5">Position #5</option>
-                  </select>
-
-                  <button
-                    type="submit"
-                    disabled={trackSubmitting}
-                    className="w-full rounded-lg bg-green-500 px-4 py-3 font-semibold text-black transition hover:bg-green-600 disabled:opacity-60"
-                  >
-                    {trackSubmitting ? "Saving..." : "Save Favorite Track"}
-                  </button>
-
-                  {trackMessage && (
-                    <p className="text-sm text-zinc-300">{trackMessage}</p>
-                  )}
-                </form>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              {favoriteTracks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">
-                  No favorite tracks yet.
-                </div>
-              ) : (
-                favoriteTracks.map((track) => (
-                  <div key={track.id} className="rounded-lg bg-zinc-800/60 p-3 min-h-[7rem]">
-                    <div className="flex items-center gap-3">
-                      {track.image_url ? (
-                        <img
-                          src={track.image_url}
-                          alt={track.track_name}
-                          className="h-12 w-12 rounded object-cover"
-                        />
-                      ) : (
-                        <div className="h-12 w-12 rounded bg-zinc-700" />
-                      )}
-
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-white">
-                          {track.track_name}
-                        </p>
-                        <p className="truncate text-xs text-zinc-400">
-                          {track.artist_name}
-                        </p>
-                      </div>
-
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500 text-sm font-bold text-black">
-                        {track.position}
-                      </div>
-                    </div>
-
-                    <p className="mt-1.5 text-xs text-transparent">&nbsp;</p>
-
-                    {isOwnProfile && (
-                      <div className="mt-2 flex flex-wrap items-center gap-1">
-                        <button
-                          onClick={() => moveTrackUp(track)}
-                          disabled={track.position === 1 || busyAction !== ""}
-                          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          onClick={() => moveTrackDown(track)}
-                          disabled={track.position === 5 || busyAction !== ""}
-                          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          onClick={() => handleDeleteFavoriteTrack(track.id)}
-                          disabled={busyAction !== ""}
-                          className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
-                        >
-                          ✕
-                        </button>
-                        {track.spotify_track_id && (
-                          <a
-                            href={`https://open.spotify.com/track/${track.spotify_track_id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="ml-auto text-xs text-green-400 hover:underline"
-                          >
-                            Listen on Spotify
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    {!isOwnProfile && track.spotify_track_id && (
-                      <div className="mt-2 flex justify-end">
-                        <a
-                          href={`https://open.spotify.com/track/${track.spotify_track_id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-green-400 hover:underline"
-                        >
-                          Listen on Spotify
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-
-          <section className="rounded-2xl bg-zinc-900 p-5 shadow-lg">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-bold">Favorite Albums</h2>
-
-              {isOwnProfile && (
-                <button
-                  onClick={() => {
-                    setShowAlbumForm((prev) => !prev);
-                    setAlbumMessage("");
-                    setAlbumResults([]);
-                    setSelectedAlbum(null);
-                    setAlbumSearch("");
-                  }}
-                  className="rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-                >
-                  {showAlbumForm ? "Close" : "Add Album"}
-                </button>
-              )}
-            </div>
-
-            {isOwnProfile && showAlbumForm && (
-              <div className="mb-6 space-y-4">
-                <form className="space-y-3" onSubmit={handleAlbumSearch}>
-                  <input
-                    type="text"
-                    placeholder="Search for an album"
-                    value={albumSearch}
-                    onChange={(e) => setAlbumSearch(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={albumSearchLoading}
-                    className="w-full rounded-lg border border-zinc-700 px-4 py-3 font-semibold text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
-                  >
-                    {albumSearchLoading ? "Searching..." : "Search Albums"}
-                  </button>
-                </form>
-
-                {albumResults.length > 0 && (
-                  <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-                    {albumResults.map((album) => (
-                      <button
-                        key={album.spotify_album_id}
-                        type="button"
-                        onClick={() => setSelectedAlbum(album)}
-                        className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${
-                          selectedAlbum?.spotify_album_id === album.spotify_album_id
-                            ? "bg-green-500/20 ring-1 ring-green-500"
-                            : "bg-zinc-800/60 hover:bg-zinc-800"
-                        }`}
-                      >
-                        {album.image_url ? (
-                          <img
-                            src={album.image_url}
-                            alt={album.album_name}
-                            className="h-16 w-16 rounded-lg object-cover"
-                          />
-                        ) : (
-                          <div className="h-16 w-16 rounded-lg bg-zinc-700" />
-                        )}
-
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-white">
-                            {album.album_name}
-                          </p>
-                          <p className="truncate text-sm text-zinc-400">
-                            {album.artist_name}
-                          </p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <form
-                  onSubmit={handleAddFavoriteAlbum}
-                  className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4"
-                >
-                  {selectedAlbum ? (
-                    <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
-                      {selectedAlbum.image_url ? (
-                        <img
-                          src={selectedAlbum.image_url}
-                          alt={selectedAlbum.album_name}
-                          className="h-16 w-16 rounded-lg object-cover"
-                        />
-                      ) : (
-                        <div className="h-16 w-16 rounded-lg bg-zinc-700" />
-                      )}
-
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold text-white">
-                          {selectedAlbum.album_name}
-                        </p>
-                        <p className="truncate text-sm text-zinc-400">
-                          {selectedAlbum.artist_name}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-zinc-400">
-                      Select an album above first.
-                    </p>
-                  )}
-
-                  <select
-                    value={albumPosition}
-                    onChange={(e) => setAlbumPosition(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="1">Position #1</option>
-                    <option value="2">Position #2</option>
-                    <option value="3">Position #3</option>
-                    <option value="4">Position #4</option>
-                    <option value="5">Position #5</option>
-                  </select>
-
-                  <button
-                    type="submit"
-                    disabled={albumSubmitting}
-                    className="w-full rounded-lg bg-green-500 px-4 py-3 font-semibold text-black transition hover:bg-green-600 disabled:opacity-60"
-                  >
-                    {albumSubmitting ? "Saving..." : "Save Favorite Album"}
-                  </button>
-
-                  {albumMessage && (
-                    <p className="text-sm text-zinc-300">{albumMessage}</p>
-                  )}
-                </form>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              {favoriteAlbums.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">
-                  No favorite albums yet.
-                </div>
-              ) : (
-                favoriteAlbums.map((album) => (
-                  <div key={album.id} className="rounded-lg bg-zinc-800/60 p-3 min-h-[7rem]">
-                    <div className="flex items-center gap-3">
-                      {album.image_url ? (
-                        <img
-                          src={album.image_url}
-                          alt={album.album_name}
-                          className="h-12 w-12 rounded object-cover"
-                        />
-                      ) : (
-                        <div className="h-12 w-12 rounded bg-zinc-700" />
-                      )}
-
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-white">
-                          {album.album_name}
-                        </p>
-                        <p className="truncate text-xs text-zinc-400">
-                          {album.artist_name}
-                        </p>
-                      </div>
-
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500 text-sm font-bold text-black">
-                        {album.position}
-                      </div>
-                    </div>
-
-                    <p className="mt-1.5 text-xs text-transparent">&nbsp;</p>
-
-                    {isOwnProfile && (
-                      <div className="mt-2 flex flex-wrap items-center gap-1">
-                        <button
-                          onClick={() => moveAlbumUp(album)}
-                          disabled={album.position === 1 || busyAction !== ""}
-                          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          onClick={() => moveAlbumDown(album)}
-                          disabled={album.position === 5 || busyAction !== ""}
-                          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          onClick={() => handleDeleteFavoriteAlbum(album.id)}
-                          disabled={busyAction !== ""}
-                          className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
-                        >
-                          ✕
-                        </button>
-                        {album.spotify_album_id && (
-                          <a
-                            href={`https://open.spotify.com/album/${album.spotify_album_id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="ml-auto text-xs text-green-400 hover:underline"
-                          >
-                            Listen on Spotify
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    {!isOwnProfile && album.spotify_album_id && (
-                      <div className="mt-2 flex justify-end">
-                        <a
-                          href={`https://open.spotify.com/album/${album.spotify_album_id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-green-400 hover:underline"
-                        >
-                          Listen on Spotify
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </div>
+          ))}
+        </ResponsiveGridLayout>
       </div>
     </main>
   );

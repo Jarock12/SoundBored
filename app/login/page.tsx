@@ -1,9 +1,18 @@
 "use client";
 
+/**
+ * Login Page (/login)
+ *
+ * Authenticates users with their email and password via Supabase Auth.
+ * On success, looks up their username in the profiles table and redirects
+ * them to their own profile page.
+ */
+
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
+import { getCurrentUserSafe } from "../../utils/supabase/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,10 +21,16 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
 
+  /**
+   * Submits credentials to Supabase Auth.
+   * On success, fetches the user's profile to get their username
+   * and redirects to /profile/{username}.
+   */
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMessage("");
 
+    // Attempt to sign in — Supabase stores the session in localStorage automatically
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -26,11 +41,11 @@ export default function LoginPage() {
       return;
     }
 
-        const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // Get the freshly authenticated user
+    const user = await getCurrentUserSafe();
 
     if (user) {
+      // Look up their username so we can redirect to the right profile URL
       const { data: profileData } = await supabase
         .from("profiles")
         .select("username")

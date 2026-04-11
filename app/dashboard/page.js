@@ -1,9 +1,20 @@
 "use client";
 
+/**
+ * Dashboard Page (/dashboard)
+ *
+ * A simple landing page shown after Spotify OAuth completes.
+ * Displays the user's email, username, and their top Spotify tracks
+ * (which are synced to the saved_tracks table by the /api/callback route).
+ *
+ * Most users will navigate from here to their profile or the feed.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../utils/supabase/supabaseClient";
+import { getCurrentUserSafe } from "../../utils/supabase/auth";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -14,9 +25,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     async function loadUserData() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const user = await getCurrentUserSafe();
 
       if (!user) {
         router.push("/login");
