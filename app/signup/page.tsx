@@ -1,5 +1,15 @@
 "use client";
 
+/**
+ * Signup Page (/signup)
+ *
+ * Creates a new user account. Two things happen on signup:
+ *  1. supabase.auth.signUp() creates the user in Supabase Auth (email + password)
+ *  2. A corresponding row is inserted into our `profiles` table with the chosen username
+ *
+ * After success, the user is redirected to their new profile page.
+ */
+
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -13,10 +23,16 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
 
+  /**
+   * Handles the signup form submission.
+   * Usernames are lowercased and trimmed before being saved.
+   * The profile row uses user.id as its primary key to link to auth.users.
+   */
   async function handleSignup(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMessage("");
 
+    // Normalize the username: lowercase and strip whitespace
     const cleanUsername = username.trim().toLowerCase();
     const cleanEmail = email.trim();
 
@@ -25,6 +41,15 @@ export default function SignupPage() {
       return;
     }
 
+    // Only allow letters, numbers, underscores, and hyphens in usernames.
+    // This prevents special characters (like semicolons) that break URL routing.
+    if (!/^[a-z0-9_-]+$/.test(cleanUsername)) {
+      setMessage("Username can only contain letters, numbers, underscores, and hyphens.");
+      return;
+    }
+
+    // Step 1: Create the auth user in Supabase
+    // We pass username/display_name as metadata so it's available on the auth record too
     const { data, error } = await supabase.auth.signUp({
       email: cleanEmail,
       password,
@@ -48,9 +73,11 @@ export default function SignupPage() {
       return;
     }
 
+    // Step 2: Create the public profile row linked to the auth user
+    // is_admin defaults to false (set in the database column default)
     const { error: profileError } = await supabase.from("profiles").insert([
       {
-        id: user.id,
+        id: user.id,           // Same ID as auth.users so they're linked
         username: cleanUsername,
         display_name: cleanUsername,
         bio: "",

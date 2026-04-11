@@ -1,5 +1,30 @@
 "use client";
 
+/**
+ * Profile Page (/profile/[username])
+ *
+ * Dynamic public profile for any user. The page is split into two areas:
+ *
+ * 1. PROFILE HEADER — avatar, display name, bio, follow stats, follow button.
+ *    - Admins see a blue shield (🛡️) badge next to the display name.
+ *    - Admins viewing someone else's profile see a ban/unban/delete action strip.
+ *    - The profile owner sees edit controls for name, bio, avatar, colors, and layout.
+ *
+ * 2. SECTION GRID — a drag-and-drop 12-column grid built with react-grid-layout.
+ *    Sections can be: recent-ratings, favorite-tracks, favorite-albums, vinyl,
+ *    cd, custom-playlist, concert-ticket, or text.
+ *    - In view mode the grid is static and compact.
+ *    - In edit mode (own profile only) sections are draggable and resizable,
+ *      and the user can add new sections, change their theme, and auto-fit heights.
+ *
+ * Data loaded on mount:
+ *  - profiles row for the viewed username (includes is_admin + is_banned)
+ *  - Current viewer's profile (to check is_admin and determine isOwnProfile)
+ *  - favorite_tracks, favorite_albums, song_ratings for the viewed profile
+ *  - follows counts + whether the viewer is already following
+ *  - Pattern/color theme stored in the profiles row
+ */
+
 import Link from "next/link";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -20,6 +45,10 @@ import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
 import ConcertTicketStubSection from "../../components/profile/ConcertTicketStubSection";
 import AddSectionModal from "../../components/profile/AddSectionModal";
+import StickerLayer, {
+  type PlacedSticker,
+  type UserCustomSticker,
+} from "../../components/profile/StickerLayer";
 
 function formatNotesText(rating: number) {
   const fullNotes = Math.floor(rating);
@@ -268,6 +297,12 @@ type Profile = {
   profile_layout: LayoutSection[] | null;
   note_color?: string | null;
   accent_text_color?: string | null;
+  /** Whether this user is a site admin — shows the shield badge publicly */
+  is_admin?: boolean | null;
+  /** Whether this user has been banned by an admin */
+  is_banned?: boolean | null;
+  /** Free-floating stickers placed on the profile grid (JSONB array) */
+  stickers?: PlacedSticker[] | null;
 };
 
 type FavoriteTrack = {
@@ -394,6 +429,17 @@ export default function ProfilePage() {
 
   const [busyAction, setBusyAction] = useState("");
 
+  // Admin state — whether the logged-in viewer is an admin, and status of admin actions
+  const [isCurrentUserAdmin, setIsCurrentUserAdmin] = useState(false);
+  const [adminActionMessage, setAdminActionMessage] = useState("");
+  const [adminActionBusy, setAdminActionBusy] = useState(false);
+
+  // Sticker state
+  const [placedStickers, setPlacedStickers] = useState<PlacedSticker[]>([]);
+  const [userCustomStickers, setUserCustomStickers] = useState<UserCustomSticker[]>([]);
+  const [showStickerToolbar, setShowStickerToolbar] = useState(false);
+  const stickerSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [editingRatingId, setEditingRatingId] = useState<string | null>(null);
   const [editRatingValue, setEditRatingValue] = useState("");
   const [editReviewValue, setEditReviewValue] = useState("");
@@ -426,6 +472,7 @@ export default function ProfilePage() {
       setEditingRatingId(null);
       setTrackMessage("");
       setAlbumMessage("");
+      setShowStickerToolbar(false);
     }
   }, [isEditMode]);
 
@@ -564,20 +611,25 @@ export default function ProfilePage() {
     setCurrentUserId(user?.id || null);
 
     if (user?.id) {
+      // Fetch the logged-in user's own profile to get their username and admin status
       const { data: currentProfileData } = await supabase
         .from("profiles")
-        .select("username")
+        .select("username, is_admin")
         .eq("id", user.id)
         .single();
 
       if (currentProfileData?.username) {
         setCurrentUsername(currentProfileData.username);
       }
+      // Store whether the currently logged-in viewer is an admin
+      setIsCurrentUserAdmin(!!currentProfileData?.is_admin);
     }
 
+    // Fetch the profile being viewed — includes is_admin and is_banned so we can
+    // show the shield badge and let admins see the ban status of other users
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
-      .select("id, username, display_name, bio, avatar_url, profile_layout, note_color, accent_text_color")
+      .select("id, username, display_name, bio, avatar_url, profile_layout, note_color, accent_text_color, is_admin, is_banned, stickers")
       .eq("username", username.toLowerCase())
       .single();
 
@@ -590,6 +642,7 @@ export default function ProfilePage() {
     setProfile(profileData);
     setBioDraft(profileData.bio || "");
     setLayout(migrateLayout(profileData.profile_layout || DEFAULT_LAYOUT));
+    setPlacedStickers((profileData.stickers as PlacedSticker[] | null) || []);
 
     if (/^#[0-9a-fA-F]{6}$/.test(profileData.note_color || "")) {
       setNoteColor(profileData.note_color as string);
@@ -652,6 +705,18 @@ export default function ProfilePage() {
 
     const ownProfile = !!user?.id && user.id === profileData.id;
     setIsOwnProfile(ownProfile);
+
+    // Load the user's uploaded custom stickers so they can place them on their profile
+    if (ownProfile && user?.id) {
+      const { data: customStickerData } = await supabase
+        .from("user_stickers")
+        .select("id, image_url")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      setUserCustomStickers(customStickerData || []);
+    } else {
+      setUserCustomStickers([]);
+    }
 
     const { data: tracksData, error: tracksError } = await supabase
       .from("favorite_tracks")
@@ -728,6 +793,161 @@ export default function ProfilePage() {
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push("/");
+  }
+
+  /**
+   * Admin: ban or unban the profile being viewed.
+   * Calls /api/admin/ban or /api/admin/unban with the current session token.
+   * The server verifies admin status before taking action.
+   */
+  async function handleAdminBanToggle() {
+    if (!profile || !isCurrentUserAdmin) return;
+
+    setAdminActionMessage("");
+    setAdminActionBusy(true);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
+    if (!token) {
+      setAdminActionMessage("Session expired. Please log in again.");
+      setAdminActionBusy(false);
+      return;
+    }
+
+    const isBanned = !!profile.is_banned;
+    const endpoint = isBanned ? "/api/admin/unban" : "/api/admin/ban";
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId: profile.id }),
+    });
+
+    const json = await res.json();
+    setAdminActionBusy(false);
+
+    if (!res.ok) {
+      setAdminActionMessage(json.error || "Action failed.");
+      return;
+    }
+
+    // Update local profile state so the UI reflects the new ban status immediately
+    setProfile((prev) => (prev ? { ...prev, is_banned: !isBanned } : prev));
+    setAdminActionMessage(
+      isBanned
+        ? `@${profile.username} has been unbanned.`
+        : `@${profile.username} has been banned.`
+    );
+  }
+
+  /**
+   * Admin: permanently delete the user being viewed.
+   * Confirms with a dialog first, then calls /api/admin/delete.
+   * After success, redirects to /admin since the profile no longer exists.
+   */
+  async function handleAdminDelete() {
+    if (!profile || !isCurrentUserAdmin) return;
+
+    if (
+      !window.confirm(
+        `Permanently delete @${profile.username}? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setAdminActionMessage("");
+    setAdminActionBusy(true);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+
+    if (!token) {
+      setAdminActionMessage("Session expired. Please log in again.");
+      setAdminActionBusy(false);
+      return;
+    }
+
+    const res = await fetch("/api/admin/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId: profile.id }),
+    });
+
+    const json = await res.json();
+    setAdminActionBusy(false);
+
+    if (!res.ok) {
+      setAdminActionMessage(json.error || "Delete failed.");
+      return;
+    }
+
+    // Profile is gone — redirect to the admin panel
+    router.push("/admin");
+  }
+
+  /**
+   * Called by StickerLayer whenever stickers are added, moved, or deleted.
+   * Updates local state immediately and debounces the Supabase write by 500 ms.
+   */
+  function handleStickersChange(stickers: PlacedSticker[]) {
+    setPlacedStickers(stickers);
+    if (!currentUserId) return;
+    if (stickerSaveTimeoutRef.current) clearTimeout(stickerSaveTimeoutRef.current);
+    stickerSaveTimeoutRef.current = setTimeout(() => {
+      supabase.from("profiles").update({ stickers }).eq("id", currentUserId);
+    }, 500);
+  }
+
+  /**
+   * Uploads a custom sticker PNG/WebP to the `stickers` Supabase Storage bucket,
+   * inserts a row in `user_stickers`, and returns the public URL.
+   * Returns null if validation fails or the upload errors.
+   */
+  async function handleUploadSticker(file: File): Promise<string | null> {
+    if (!currentUserId) return null;
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+    if (file.size > MAX_BYTES) return null;
+    if (!["image/png", "image/webp"].includes(file.type)) return null;
+
+    const ext = file.type === "image/webp" ? "webp" : "png";
+    const filePath = `${currentUserId}/${Date.now()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("stickers")
+      .upload(filePath, file, { upsert: false });
+
+    if (uploadError) return null;
+
+    const { data: publicUrlData } = supabase.storage
+      .from("stickers")
+      .getPublicUrl(filePath);
+
+    const imageUrl = publicUrlData.publicUrl;
+
+    const { data: insertedSticker } = await supabase
+      .from("user_stickers")
+      .insert({ user_id: currentUserId, image_url: imageUrl })
+      .select("id, image_url")
+      .single();
+
+    if (insertedSticker) {
+      setUserCustomStickers((prev) => [insertedSticker as UserCustomSticker, ...prev]);
+    }
+
+    return imageUrl;
   }
 
   async function handleToggleFollow() {
@@ -1845,7 +2065,7 @@ export default function ProfilePage() {
                   {track.image_url ? (<img src={track.image_url} alt={track.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-white">{track.track_name}</p>
-                    <p className="truncate text-xs text-zinc-400">{track.artist_name}</p>
+                    <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{track.artist_name}</p>
                   </div>
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold text-black" style={{ backgroundColor: theme.accentTextColor }}>{track.position}</div>
                 </div>
@@ -1929,7 +2149,7 @@ export default function ProfilePage() {
                   {album.image_url ? (<img src={album.image_url} alt={album.album_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-white">{album.album_name}</p>
-                    <p className="truncate text-xs text-zinc-400">{album.artist_name}</p>
+                    <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{album.artist_name}</p>
                   </div>
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold text-black" style={{ backgroundColor: theme.accentTextColor }}>{album.position}</div>
                 </div>
@@ -1979,9 +2199,91 @@ export default function ProfilePage() {
   return (
     <main className="min-h-screen overflow-x-hidden px-6 py-8 text-white">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+
+        {/* ── Top nav row ── sits above the profile card, right-aligned in the black space */}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {isOwnProfile ? (
+            <TopNav
+              showMyProfile={false}
+              myProfileUsername={currentUsername}
+              showFeed
+              showUsers
+              showRate
+              showLogout
+              onLogout={handleLogout}
+              showAdmin={isCurrentUserAdmin}
+              isAdmin={isCurrentUserAdmin}
+            />
+          ) : (
+            <>
+              <TopNav
+                showMyProfile
+                myProfileUsername={currentUsername}
+                showFeed
+                showUsers
+                showRate
+                showProfile={false}
+                showAdmin={isCurrentUserAdmin}
+                isAdmin={isCurrentUserAdmin}
+              />
+              {currentUserId && (
+                <button
+                  onClick={handleToggleFollow}
+                  disabled={followBusy}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                    isFollowing
+                      ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                      : "bg-green-500 text-black hover:bg-green-600"
+                  } disabled:opacity-60`}
+                >
+                  {followBusy ? "Working..." : isFollowing ? "Following" : "Follow"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Admin action strip — only shown to admins viewing someone else's profile */}
+        {isCurrentUserAdmin && !isOwnProfile && profile && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-900 bg-blue-950/30 px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-blue-400">🛡️ Admin</span>
+            <button
+              onClick={handleAdminBanToggle}
+              disabled={adminActionBusy}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition disabled:opacity-60 ${
+                profile.is_banned
+                  ? "bg-green-700 text-white hover:bg-green-600"
+                  : "bg-yellow-700 text-white hover:bg-yellow-600"
+              }`}
+            >
+              {adminActionBusy ? "Working..." : profile.is_banned ? "Unban User" : "Ban User"}
+            </button>
+            <button
+              onClick={handleAdminDelete}
+              disabled={adminActionBusy}
+              className="rounded-lg bg-red-800 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+            >
+              {adminActionBusy ? "Working..." : "Delete User"}
+            </button>
+            {adminActionMessage && <span className="text-sm text-zinc-300">{adminActionMessage}</span>}
+          </div>
+        )}
+
         <div className="relative rounded-2xl p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
           {isOwnProfile && (
-            <div className="mb-4 flex justify-end">
+            <div className="mb-4 flex items-center justify-end gap-2">
+              {isEditMode && (
+                <button
+                  onClick={() => setShowStickerToolbar((prev) => !prev)}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                    showStickerToolbar
+                      ? "bg-purple-600 text-white hover:bg-purple-700"
+                      : "border border-purple-600 text-purple-300 hover:bg-purple-900/30"
+                  }`}
+                >
+                  🎨 Stickers
+                </button>
+              )}
               <button
                 onClick={() => {
                   if (isEditMode) {
@@ -2315,7 +2617,7 @@ export default function ProfilePage() {
                 )}
               />
             )}
-            <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative z-10">
               <div className="flex items-center gap-5">
               <div className="relative group">
                 {profile.avatar_url ? (
@@ -2375,6 +2677,16 @@ export default function ProfilePage() {
                     <h1 className="text-3xl font-bold">
                       {profile.display_name || profile.username}
                     </h1>
+                    {/* Shield badge — visible to everyone when this user is an admin */}
+                    {profile.is_admin && (
+                      <span
+                        title="Admin"
+                        className="text-blue-400 text-2xl"
+                        aria-label="Admin"
+                      >
+                        🛡️
+                      </span>
+                    )}
                     {isOwnProfile && (
                       <button
                         onClick={() => {
@@ -2408,40 +2720,6 @@ export default function ProfilePage() {
               </div>
             </div>
 
-              {isOwnProfile ? (
-                <TopNav
-                  showMyProfile={false}
-                  myProfileUsername={currentUsername}
-                  showFeed
-                  showUsers
-                  showRate
-                  showLogout
-                  onLogout={handleLogout}
-                />
-              ) : (
-                <div className="flex flex-wrap gap-3">
-                  <TopNav
-                    showMyProfile
-                    myProfileUsername={currentUsername}
-                    showFeed
-                    showUsers
-                    showRate
-                    showProfile={false}
-                  />
-
-                  <button
-                    onClick={handleToggleFollow}
-                    disabled={followBusy}
-                    className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                      isFollowing
-                        ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-                        : "bg-green-500 text-black hover:bg-green-600"
-                    } disabled:opacity-60`}
-                  >
-                    {followBusy ? "Working..." : isFollowing ? "Following" : "Follow"}
-                  </button>
-                </div>
-              )}
             </div>
           </div>
 
@@ -2520,6 +2798,16 @@ export default function ProfilePage() {
       <div
         className={`relative left-1/2 w-screen -translate-x-1/2 ${isEditMode ? "profile-grid-overlay" : ""}`}
       >
+        {/* Sticker layer sits absolutely over the grid; pointer-events:none in view mode */}
+        <StickerLayer
+          stickers={placedStickers}
+          customStickers={userCustomStickers}
+          isEditMode={isEditMode && isOwnProfile}
+          showToolbar={showStickerToolbar}
+          userId={currentUserId}
+          onChange={handleStickersChange}
+          onUploadSticker={handleUploadSticker}
+        />
         <ResponsiveGridLayout
           className="layout"
           width={viewportWidth}

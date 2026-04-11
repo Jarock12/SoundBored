@@ -1,5 +1,17 @@
 "use client";
 
+/**
+ * Feed Page (/feed)
+ *
+ * The main social feed. Shows three columns:
+ *  1. Feed — song ratings posted by users the current user follows
+ *  2. Trending — tracks with the most ratings across all users
+ *  3. Suggested — users the current user isn't following yet (helps discovery)
+ *
+ * Also has a search bar to find and follow users directly from the feed.
+ * Protected: redirects to /login if not authenticated.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";

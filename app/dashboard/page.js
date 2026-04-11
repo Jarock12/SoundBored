@@ -1,5 +1,15 @@
 "use client";
 
+/**
+ * Dashboard Page (/dashboard)
+ *
+ * A simple landing page shown after Spotify OAuth completes.
+ * Displays the user's email, username, and their top Spotify tracks
+ * (which are synced to the saved_tracks table by the /api/callback route).
+ *
+ * Most users will navigate from here to their profile or the feed.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";

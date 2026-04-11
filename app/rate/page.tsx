@@ -1,5 +1,21 @@
 "use client";
 
+/**
+ * Rate a Song Page (/rate)
+ *
+ * Lets the current user search for a track on Spotify and submit a rating
+ * (0.5–5.0 in half-step increments) plus an optional written review.
+ *
+ * Ratings are upserted into the song_ratings table — if the user has already
+ * rated the same Spotify track, their existing rating is updated instead of
+ * creating a duplicate.
+ *
+ * The search proxies through /api/spotify/search so the Spotify credentials
+ * never reach the browser.
+ *
+ * Protected: redirects to /login if not authenticated.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";

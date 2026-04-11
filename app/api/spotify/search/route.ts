@@ -1,3 +1,19 @@
+/**
+ * GET /api/spotify/search
+ *
+ * Proxy endpoint for Spotify search. The client passes a query and a type
+ * ("track" or "album") and this route fetches from Spotify's API server-side
+ * (so the Spotify credentials stay on the server).
+ *
+ * Query params:
+ *   q    — search query string (required)
+ *   type — "track" or "album" (default: "album")
+ *
+ * Returns:
+ *   { tracks: [...] }  when type=track
+ *   { albums: [...] }  when type=album
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { getSpotifyAccessToken } from "../../../../lib/spotify";
 

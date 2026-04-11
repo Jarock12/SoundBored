@@ -1,5 +1,20 @@
 "use client";
 
+/**
+ * Discover Users Page (/users)
+ *
+ * Lists all users on the platform so the current user can find and follow them.
+ * Search filters by username or display name using a case-insensitive ILIKE query.
+ *
+ * For each result the page shows:
+ *  - Avatar (initials fallback)
+ *  - Display name + @username
+ *  - Follower count
+ *  - A Follow / Following toggle button
+ *
+ * Protected: redirects to /login if not authenticated.
+ */
+
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
