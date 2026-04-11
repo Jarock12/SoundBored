@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
 import { getCurrentUserSafe } from "../../utils/supabase/auth";
 import TopNav from "../../components/TopNav";
+import MusicNotesLoader from "../components/MusicNotesLoader";
 
 type Profile = {
   id: string;
@@ -239,11 +240,7 @@ export default function UsersPage() {
   }
 
   if (loading) {
-    return (
-      <main className="min-h-screen text-white flex items-center justify-center">
-        <p className="text-lg text-zinc-400">Loading users...</p>
-      </main>
-    );
+    return <MusicNotesLoader />;
   }
 
   return (

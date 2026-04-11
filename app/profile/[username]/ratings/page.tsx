@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "../../../../utils/supabase/supabaseClient";
 import { getCurrentUserSafe } from "../../../../utils/supabase/auth";
 import TopNav from "../../../../components/TopNav";
+import MusicNotesLoader from "../../../components/MusicNotesLoader";
 import NoteRating from "../../../components/NoteRating";
 
 const DEFAULT_ACCENT_TEXT_COLOR = "#22c55e";
@@ -210,11 +211,7 @@ export default function ProfileRatingsPage() {
   }, [ratings]);
 
   if (loading) {
-    return (
-      <main className="min-h-screen text-white flex items-center justify-center overflow-x-hidden">
-        <p className="text-zinc-400 text-lg">Loading ratings...</p>
-      </main>
-    );
+    return <MusicNotesLoader />;
   }
 
   if (notFound || !profile) {

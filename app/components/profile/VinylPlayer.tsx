@@ -58,6 +58,7 @@ type Props = {
   outerBackgroundColor?: string;
   onSelectTrack?: (track: VinylTrack) => void;
   onUpdateColors?: (colors: PlayerColors) => void;
+  onUpdateTitle?: (title: string) => void;
 };
 
 // Main component function
@@ -71,6 +72,7 @@ export default function VinylPlayer({
   outerBackgroundColor,
   onSelectTrack,
   onUpdateColors,
+  onUpdateTitle,
 }: Props) {
 
   // Merge default and custom colors
@@ -86,6 +88,8 @@ export default function VinylPlayer({
   const [searchQuery, setSearchQuery] = useState(""); // Track search input
   const [searchResults, setSearchResults] = useState<VinylTrack[]>([]); // Track search results
   const [searchLoading, setSearchLoading] = useState(false); // Track search loading state
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
 
   // Refs for Spotify IFrame API and current track
   const embedRef = useRef<HTMLDivElement>(null);
@@ -217,7 +221,41 @@ export default function VinylPlayer({
   return (
     <div className="h-full rounded-2xl p-5 shadow-lg" style={outerBackgroundColor ? { backgroundColor: outerBackgroundColor } : { backgroundColor: "#18181b" }}>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-bold">{title}</h2>
+        {editingTitle ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1 text-lg font-bold text-white outline-none"
+              autoFocus
+            />
+            <button
+              onClick={() => { onUpdateTitle?.(titleDraft.trim()); setEditingTitle(false); }}
+              className="rounded bg-green-500 px-2 py-1 text-xs font-semibold text-black"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setEditingTitle(false)}
+              className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold">{title}</h2>
+            {showCustomizeControls && (
+              <button
+                onClick={() => { setTitleDraft(title); setEditingTitle(true); }}
+                className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
+              >
+                ✎
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex gap-2">
           {showCustomizeControls && (
             <>

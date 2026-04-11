@@ -19,6 +19,7 @@ import { supabase } from "../../utils/supabase/supabaseClient";
 import { getCurrentUserSafe } from "../../utils/supabase/auth";
 import TopNav from "../../components/TopNav";
 import NoteRating from "../components/NoteRating";
+import MusicNotesLoader from "../components/MusicNotesLoader";
 
 type SongRating = {
   id: string;
@@ -412,11 +413,7 @@ export default function FeedPage() {
   }, [router]);
 
   if (loading) {
-    return (
-      <main className="min-h-screen text-white flex items-center justify-center">
-        <p className="text-lg text-zinc-400">Loading feed...</p>
-      </main>
-    );
+    return <MusicNotesLoader />;
   }
 
   return (

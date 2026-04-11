@@ -20,6 +20,7 @@ import Link from "next/link";
 import { supabase } from "../../utils/supabase/supabaseClient";
 import { getCurrentUserSafe } from "../../utils/supabase/auth";
 import TopNav from "../../components/TopNav";
+import MusicNotesLoader from "../components/MusicNotesLoader";
 
 // Shape of a user row as returned from the profiles table
 type AdminUserRow = {
@@ -219,11 +220,7 @@ export default function AdminPage() {
   });
 
   if (loading) {
-    return (
-      <main className="min-h-screen text-white flex items-center justify-center">
-        <p className="text-zinc-400 text-lg">Loading admin panel...</p>
-      </main>
-    );
+    return <MusicNotesLoader />;
   }
 
   return (

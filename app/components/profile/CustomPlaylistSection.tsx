@@ -167,7 +167,10 @@ export default function CustomPlaylistSection({
                     <p className="truncate text-sm font-semibold text-white">
                       {t.track_name}
                     </p>
-                    <p className="truncate text-xs text-zinc-400">
+                    <p
+                      className="truncate text-xs"
+                      style={accentTextColor ? { color: accentTextColor } : { color: "#a1a1aa" }}
+                    >
                       {t.artist_name}
                     </p>
                   </div>
@@ -205,7 +208,10 @@ export default function CustomPlaylistSection({
                 <p className="truncate text-sm font-semibold text-white">
                   {track.track_name}
                 </p>
-                <p className="truncate text-xs text-zinc-400">
+                <p
+                  className="truncate text-xs"
+                  style={accentTextColor ? { color: accentTextColor } : { color: "#a1a1aa" }}
+                >
                   {track.artist_name}
                 </p>
               </div>

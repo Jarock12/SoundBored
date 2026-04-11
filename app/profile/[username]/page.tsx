@@ -41,6 +41,8 @@ import { getCurrentUserSafe } from "../../../utils/supabase/auth";
 import TopNav from "../../../components/TopNav";
 import NoteRating from "../../components/NoteRating";
 import VinylPlayer from "../../components/profile/VinylPlayer";
+import MusicNotesLoader, { cacheNoteColor } from "../../components/MusicNotesLoader";
+import WalkmanPlayer from "../../components/profile/WalkmanPlayer";
 import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
 import ConcertTicketStubSection from "../../components/profile/ConcertTicketStubSection";
@@ -237,6 +239,8 @@ function getDefaultSectionSize(type: string): { w: number; h: number } {
     case "vinyl":
     case "cd":
       return { w: 4, h: 18 };
+    case "strollman":
+      return { w: 4, h: 32 };
     case "custom-playlist":
       return { w: 4, h: 16 };
     case "concert-ticket":
@@ -603,6 +607,11 @@ export default function ProfilePage() {
   async function loadProfile() {
     if (!username) return;
 
+    // Seed noteColor from cache immediately so the loading screen uses the
+    // right color before the network response arrives.
+    const cached = localStorage.getItem("soundbored_note_color");
+    if (cached) setNoteColor(cached);
+
     setLoading(true);
     setNotFound(false);
 
@@ -646,8 +655,10 @@ export default function ProfilePage() {
 
     if (/^#[0-9a-fA-F]{6}$/.test(profileData.note_color || "")) {
       setNoteColor(profileData.note_color as string);
+      cacheNoteColor(profileData.note_color as string);
     } else {
       setNoteColor(DEFAULT_NOTE_COLOR);
+      cacheNoteColor(DEFAULT_NOTE_COLOR);
     }
 
     if (/^#[0-9a-fA-F]{6}$/.test(profileData.accent_text_color || "")) {
@@ -1835,6 +1846,7 @@ export default function ProfilePage() {
             outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
             onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
             onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+            onUpdateTitle={(title) => updateSectionTitle(section.id, title)}
           />
         );
       case "cd":
@@ -1849,6 +1861,21 @@ export default function ProfilePage() {
             outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
             onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
             onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+            onUpdateTitle={(title) => updateSectionTitle(section.id, title)}
+          />
+        );
+      case "strollman":
+        return (
+          <WalkmanPlayer
+            title={section.title}
+            track={(section.data?.track as { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; preview_url?: string | null }) || null}
+            colors={(section.data?.colors as Record<string, string>) || undefined}
+            isOwnProfile={isOwnProfile}
+            canCustomize={canCustomizeSections}
+            outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            onSelectTrack={(track) => updateSectionData(section.id, { ...section.data, track })}
+            onUpdateColors={(colors) => updateSectionData(section.id, { ...section.data, colors })}
+            onUpdateTitle={(title) => updateSectionTitle(section.id, title)}
           />
         );
       case "text":
@@ -1858,6 +1885,7 @@ export default function ProfilePage() {
             content={(section.data?.content as string) || ""}
             isOwnProfile={isOwnProfile}
             outerBackgroundColor={hexToRgba(theme.outerBgColor, theme.outerBgOpacity)}
+            accentTextColor={theme.accentTextColor}
             onSave={(title, content) => {
               const size = getDynamicTextSectionSize(title, content);
               saveLayout(
@@ -2176,11 +2204,7 @@ export default function ProfilePage() {
   }
 
   if (loading) {
-    return (
-      <main className="min-h-screen text-white flex items-center justify-center">
-        <p className="text-zinc-400 text-lg">Loading profile...</p>
-      </main>
-    );
+    return <MusicNotesLoader color={noteColor} />;
   }
 
   if (notFound || !profile) {

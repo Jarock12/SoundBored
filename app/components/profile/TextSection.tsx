@@ -7,6 +7,7 @@ type Props = {
   content: string;
   isOwnProfile: boolean;
   outerBackgroundColor?: string;
+  accentTextColor?: string;
   onSave?: (title: string, content: string) => void;
 };
 
@@ -15,6 +16,7 @@ export default function TextSection({
   content,
   isOwnProfile,
   outerBackgroundColor,
+  accentTextColor,
   onSave,
 }: Props) {
   const [isEditing, setIsEditing] = useState(false);
@@ -76,7 +78,10 @@ export default function TextSection({
               </button>
             )}
           </div>
-          <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-300">
+          <p
+            className="whitespace-pre-wrap text-sm leading-6"
+            style={accentTextColor ? { color: accentTextColor } : { color: "#d4d4d8" }}
+          >
             {content ||
               (isOwnProfile
                 ? "Click edit to add content."

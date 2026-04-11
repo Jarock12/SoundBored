@@ -24,7 +24,7 @@ const SECTION_TYPES = [
   },
   {
     type: "vinyl",
-    label: "Vinyl Player",
+    label: "Record Player",
     description: "A spinning vinyl record with a song",
     icon: "◎",
     unique: false,
@@ -54,7 +54,14 @@ const SECTION_TYPES = [
     type: "text",
     label: "Text Box",
     description: "Add custom text content",
-    icon: "¶",
+    icon: "T",
+    unique: false,
+  },
+  {
+    type: "strollman",
+    label: "Strollman",
+    description: "A retro cassette walkman with spinning reels and a song",
+    icon: "📼",
     unique: false,
   },
 ];
