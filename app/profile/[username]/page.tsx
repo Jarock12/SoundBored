@@ -395,6 +395,32 @@ type SongRating = {
   updated_at: string;
 };
 
+type FollowProfile = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
+async function loadFollowProfiles(userIds: string[]): Promise<FollowProfile[]> {
+  if (userIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, username, display_name, avatar_url")
+    .in("id", userIds);
+
+  if (error || !data) {
+    console.error("Error loading follow profiles:", error?.message);
+    return [];
+  }
+
+  const profileMap = new Map(data.map((item) => [item.id, item as FollowProfile]));
+  return userIds
+    .map((id) => profileMap.get(id))
+    .filter((item): item is FollowProfile => !!item);
+}
+
 
 
 export default function ProfilePage() {
@@ -418,6 +444,8 @@ export default function ProfilePage() {
 
   const [followerCount, setFollowerCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
+  const [followers, setFollowers] = useState<FollowProfile[]>([]);
+  const [followingUsers, setFollowingUsers] = useState<FollowProfile[]>([]);
 
   const [bioDraft, setBioDraft] = useState("");
   const [bioMessage, setBioMessage] = useState("");
@@ -820,6 +848,34 @@ export default function ProfilePage() {
     setFollowerCount(followerCountValue || 0);
     setFollowingCount(followingCountValue || 0);
 
+    const { data: followerRows, error: followerRowsError } = await supabase
+      .from("follows")
+      .select("follower_id")
+      .eq("following_id", profileData.id)
+      .limit(50);
+
+    if (followerRowsError) {
+      console.error("Error loading followers:", followerRowsError.message);
+      setFollowers([]);
+    } else {
+      const followerIds = (followerRows || []).map((row) => row.follower_id);
+      setFollowers(await loadFollowProfiles(followerIds));
+    }
+
+    const { data: followingRows, error: followingRowsError } = await supabase
+      .from("follows")
+      .select("following_id")
+      .eq("follower_id", profileData.id)
+      .limit(50);
+
+    if (followingRowsError) {
+      console.error("Error loading following:", followingRowsError.message);
+      setFollowingUsers([]);
+    } else {
+      const followingIds = (followingRows || []).map((row) => row.following_id);
+      setFollowingUsers(await loadFollowProfiles(followingIds));
+    }
+
     if (user?.id && user.id !== profileData.id) {
       const { data: followRow } = await supabase
         .from("follows")
@@ -1021,6 +1077,7 @@ export default function ProfilePage() {
 
       setIsFollowing(false);
       setFollowerCount((prev) => Math.max(0, prev - 1));
+      setFollowers((prev) => prev.filter((item) => item.id !== currentUserId));
       return;
     }
 
@@ -1038,6 +1095,75 @@ export default function ProfilePage() {
 
     setIsFollowing(true);
     setFollowerCount((prev) => prev + 1);
+    if (currentUsername) {
+      setFollowers((prev) => {
+        if (prev.some((item) => item.id === currentUserId)) {
+          return prev;
+        }
+
+        return [
+          {
+            id: currentUserId,
+            username: currentUsername,
+            display_name: currentUsername,
+            avatar_url: null,
+          },
+          ...prev,
+        ].slice(0, 50);
+      });
+    }
+  }
+
+  function renderFollowList(
+    title: string,
+    items: FollowProfile[],
+    emptyMessage: string
+  ) {
+    return (
+      <section className="rounded-2xl bg-zinc-900/70 p-5 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <span className="text-xs uppercase tracking-wide text-zinc-500">
+            {items.length}
+          </span>
+        </div>
+
+        {items.length === 0 ? (
+          <p className="text-sm text-zinc-400">{emptyMessage}</p>
+        ) : (
+          <div className="space-y-3">
+            {items.map((item) => (
+              <Link
+                key={item.id}
+                href={`/profile/${item.username}`}
+                className="flex items-center gap-3 rounded-xl bg-zinc-800/70 px-3 py-2 transition hover:bg-zinc-800"
+              >
+                {item.avatar_url ? (
+                  <img
+                    src={item.avatar_url}
+                    alt={item.username}
+                    className="h-10 w-10 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-700 text-sm font-bold text-green-400">
+                    {item.display_name?.[0]?.toUpperCase() ||
+                      item.username?.[0]?.toUpperCase() ||
+                      "U"}
+                  </div>
+                )}
+
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-white">
+                    {item.display_name || item.username}
+                  </p>
+                  <p className="truncate text-sm text-zinc-400">@{item.username}</p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+    );
   }
 
   async function handleSaveBio(e: React.FormEvent<HTMLFormElement>) {
@@ -2844,6 +2970,19 @@ export default function ProfilePage() {
                   )}
                 </div>
               </form>
+            )}
+          </div>
+
+          <div className="mt-6 grid gap-4 border-t pt-6 md:grid-cols-2" style={{ borderTopColor: profileCardPatternColor }}>
+            {renderFollowList(
+              "Followers",
+              followers,
+              "No followers yet."
+            )}
+            {renderFollowList(
+              "Following",
+              followingUsers,
+              "Not following anyone yet."
             )}
           </div>
         </div>
