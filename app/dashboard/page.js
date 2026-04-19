@@ -10,30 +10,28 @@
  * Most users will navigate from here to their profile or the feed.
  */
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
+import { useAuth } from "../context/AuthProvider";
 
 export default function Dashboard() {
   const router = useRouter();
+  const { user, authLoading } = useAuth();
 
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [tracks, setTracks] = useState([]);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+
+    setEmail(user.email || "");
+
     async function loadUserData() {
-      const user = await getCurrentUserSafe();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      setEmail(user.email || "");
-
       const { data: profileData, error } = await supabase
         .from("profiles")
         .select("username")
@@ -44,7 +42,6 @@ export default function Dashboard() {
         setUsername(profileData.username);
       }
 
-      // Fetch tracks
       const { data: tracksData } = await supabase
         .from('saved_tracks')
         .select('*')
@@ -54,7 +51,7 @@ export default function Dashboard() {
     }
 
     loadUserData();
-  }, [router]);
+  }, [user, authLoading, router]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -85,9 +82,11 @@ export default function Dashboard() {
             {tracks.map((track) => (
               <div key={track.id} className="bg-zinc-800 p-4 rounded-lg">
                 {track.album_url && (
-                  <img 
-                    src={track.album_url} 
+                  <Image
+                    src={track.album_url}
                     alt={track.track_name}
+                    width={400}
+                    height={192}
                     className="w-full h-48 object-cover rounded mb-4"
                   />
                 )}

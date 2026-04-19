@@ -29,6 +29,8 @@ import Link from "next/link";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
+import Image from "next/image";
 import {
   ResponsiveGridLayout,
   verticalCompactor,
@@ -38,20 +40,20 @@ import {
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import { supabase } from "../../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../../utils/supabase/auth";
+import { useAuth } from "../../context/AuthProvider";
 import NoteRating from "../../components/NoteRating";
-import VinylPlayer from "../../components/profile/VinylPlayer";
 import MusicNotesLoader, { cacheNoteColor } from "../../components/MusicNotesLoader";
-import WalkmanPlayer from "../../components/profile/WalkmanPlayer";
 import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
 import ConcertTicketStubSection from "../../components/profile/ConcertTicketStubSection";
 import AddSectionModal from "../../components/profile/AddSectionModal";
 import MusicReviewCard from "../../components/MusicReviewCard";
-import StickerLayer, {
-  type PlacedSticker,
-  type UserCustomSticker,
-} from "../../components/profile/StickerLayer";
+import { BadgeIcon, BADGE_META } from "../../components/BadgeIcon";
+import type { PlacedSticker, UserCustomSticker } from "../../components/profile/StickerLayer";
+
+const VinylPlayer = dynamic(() => import("../../components/profile/VinylPlayer"), { ssr: false });
+const WalkmanPlayer = dynamic(() => import("../../components/profile/WalkmanPlayer"), { ssr: false });
+const StickerLayer = dynamic(() => import("../../components/profile/StickerLayer"), { ssr: false });
 
 function formatNotesText(rating: number) {
   const fullNotes = Math.floor(rating);
@@ -290,6 +292,34 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function sectionsCollide(a: LayoutSection, b: LayoutSection): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/**
+ * Pushes sections downward to resolve overlaps after heights change.
+ * Only adjusts y positions — never moves sections horizontally.
+ * Preserves the user's column arrangement from edit mode.
+ */
+function pushDownOverlaps(sections: LayoutSection[]): LayoutSection[] {
+  const result = sections.map((s) => ({ ...s }));
+  // Process in top-to-bottom order so earlier items anchor later ones
+  result.sort((a, b) => a.y - b.y || a.x - b.x);
+  for (let i = 1; i < result.length; i++) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let j = 0; j < i; j++) {
+        if (sectionsCollide(result[j], result[i])) {
+          result[i] = { ...result[i], y: result[j].y + result[j].h };
+          changed = true;
+        }
+      }
+    }
+  }
+  return result;
+}
+
 /**
  * Computes an appropriate grid size for a text section based on its content.
  * Used by the "Auto-fit" button so short notes get a compact box while
@@ -347,6 +377,8 @@ type Profile = {
   is_banned?: boolean | null;
   /** Free-floating stickers placed on the profile grid (JSONB array) */
   stickers?: PlacedSticker[] | null;
+  /** Easter-egg badges earned via the /about ocarina */
+  badges?: string[] | null;
 };
 
 type FavoriteTrack = {
@@ -396,37 +428,10 @@ type SongRating = {
   updated_at: string;
 };
 
-type FollowProfile = {
-  id: string;
-  username: string;
-  display_name: string | null;
-  avatar_url: string | null;
-};
-
-async function loadFollowProfiles(userIds: string[]): Promise<FollowProfile[]> {
-  if (userIds.length === 0) return [];
-
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, username, display_name, avatar_url")
-    .in("id", userIds);
-
-  if (error || !data) {
-    console.error("Error loading follow profiles:", error?.message);
-    return [];
-  }
-
-  const profileMap = new Map(data.map((item) => [item.id, item as FollowProfile]));
-  return userIds
-    .map((id) => profileMap.get(id))
-    .filter((item): item is FollowProfile => !!item);
-}
-
-
-
 export default function ProfilePage() {
   const params = useParams();
   const router = useRouter();
+  const { user, authLoading } = useAuth();
   const username =
     typeof params.username === "string" ? params.username : "";
 
@@ -435,6 +440,7 @@ export default function ProfilePage() {
   const [favoriteAlbums, setFavoriteAlbums] = useState<FavoriteAlbum[]>([]);
   const [recentRatings, setRecentRatings] = useState<SongRating[]>([]);
   const [loading, setLoading] = useState(true);
+  const [timedOut, setTimedOut] = useState(false);
   const [notFound, setNotFound] = useState(false);
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -445,10 +451,6 @@ export default function ProfilePage() {
 
   const [followerCount, setFollowerCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
-  const [followers, setFollowers] = useState<FollowProfile[]>([]);
-  const [followingUsers, setFollowingUsers] = useState<FollowProfile[]>([]);
-  const [showFollowers, setShowFollowers] = useState(false);
-  const [showFollowing, setShowFollowing] = useState(false);
 
   const [bioDraft, setBioDraft] = useState("");
   const [bioMessage, setBioMessage] = useState("");
@@ -521,6 +523,7 @@ export default function ProfilePage() {
 
   const [layout, setLayout] = useState<LayoutSection[]>(DEFAULT_LAYOUT);
   const [isEditMode, setIsEditMode] = useState(false);
+  const isEditModeRef = useRef(false);
   const [showAddSection, setShowAddSection] = useState(false);
   const [isAutoFitting, setIsAutoFitting] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(1200);
@@ -552,6 +555,7 @@ export default function ProfilePage() {
       setAlbumMessage("");
       setShowStickerToolbar(false);
     }
+    isEditModeRef.current = isEditMode;
   }, [isEditMode]);
 
   useEffect(() => {
@@ -586,11 +590,11 @@ export default function ProfilePage() {
   }, [styleTargetSectionId, layout, accentTextColor]);
 
   useEffect(() => {
-    if (isEditMode) return;
+    if (isEditModeRef.current) return;
 
-    let changed = false;
+    let heightsChanged = false;
 
-    const nextLayout = layout.map((section) => {
+    const withNewHeights = layout.map((section) => {
       let targetH = section.h;
 
       if (section.type === "favorite-tracks") {
@@ -598,7 +602,6 @@ export default function ProfilePage() {
       } else if (section.type === "favorite-albums") {
         targetH = estimateSnugRows(favoriteAlbums.length, showAlbumForm ? 320 : 0);
       } else if (section.type === "recent-ratings") {
-        // Extra per-item height for MusicReviewCard rendered inside each rating
         const reviewCardExtra = recentRatings.length * 80;
         targetH = estimateSnugRows(recentRatings.length, (editingRatingId ? 120 : 0) + 24 + reviewCardExtra);
       } else if (section.type === "custom-playlist") {
@@ -607,14 +610,16 @@ export default function ProfilePage() {
       }
 
       if (targetH !== section.h) {
-        changed = true;
+        heightsChanged = true;
         return { ...section, h: targetH };
       }
 
       return section;
     });
 
-    if (!changed) return;
+    if (!heightsChanged) return;
+
+    const nextLayout = pushDownOverlaps(withNewHeights);
 
     setLayout(nextLayout);
 
@@ -626,7 +631,6 @@ export default function ProfilePage() {
     }
   }, [
     layout,
-    isEditMode,
     currentUserId,
     favoriteTracks.length,
     favoriteAlbums.length,
@@ -683,40 +687,23 @@ export default function ProfilePage() {
   async function loadProfile() {
     if (!username) return;
 
-    // Seed noteColor from cache immediately so the loading screen uses the
-    // right color before the network response arrives.
     const cached = localStorage.getItem("soundbored_note_color");
     if (cached) setNoteColor(cached);
 
     setLoading(true);
+    setTimedOut(false);
     setNotFound(false);
+    try {
 
-    const user = await getCurrentUserSafe();
-
-    setCurrentUserId(user?.id || null);
-
-    if (user?.id) {
-      // Fetch the logged-in user's own profile to get their username and admin status
-      const { data: currentProfileData } = await supabase
-        .from("profiles")
-        .select("username, is_admin")
-        .eq("id", user.id)
-        .single();
-
-      if (currentProfileData?.username) {
-        setCurrentUsername(currentProfileData.username);
-      }
-      // Store whether the currently logged-in viewer is an admin
-      setIsCurrentUserAdmin(!!currentProfileData?.is_admin);
-    }
-
-    // Fetch the profile being viewed — includes is_admin and is_banned so we can
-    // show the shield badge and let admins see the ban status of other users
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
-      .select("id, username, display_name, bio, avatar_url, profile_layout, note_color, accent_text_color, is_admin, is_banned, stickers")
+      .select(
+        "id, username, display_name, bio, avatar_url, profile_layout, note_color, accent_text_color, is_admin, is_banned, stickers, profile_card_pattern, profile_card_pattern_color, profile_card_pattern_opacity, profile_box_bg_color, profile_box_bg_opacity, badges"
+      )
       .eq("username", username.toLowerCase())
       .single();
+
+    setCurrentUserId(user?.id || null);
 
     if (profileError || !profileData) {
       setNotFound(true);
@@ -743,173 +730,122 @@ export default function ProfilePage() {
       setAccentTextColor(DEFAULT_ACCENT_TEXT_COLOR);
     }
 
-    const { data: patternData, error: patternError } = await supabase
-      .from("profiles")
-      .select("profile_card_pattern, profile_card_pattern_color, profile_card_pattern_opacity, profile_box_bg_color, profile_box_bg_opacity")
-      .eq("id", profileData.id)
-      .maybeSingle();
+    // Apply pattern fields from the merged query (no second fetch needed)
+    const rawPattern = (profileData as Record<string, unknown>).profile_card_pattern as string | null;
+    const parsedPattern: ProfileCardPattern =
+      rawPattern === "dots" || rawPattern === "grid" || rawPattern === "diagonal" || rawPattern === "waves" || rawPattern === "crosshatch"
+        ? rawPattern
+        : "none";
+    setProfileCardPattern(parsedPattern);
 
-    if (!patternError && patternData) {
-      const rawPattern = patternData.profile_card_pattern;
-      const parsedPattern: ProfileCardPattern =
-        rawPattern === "dots" || rawPattern === "grid" || rawPattern === "diagonal" || rawPattern === "waves" || rawPattern === "crosshatch"
-          ? rawPattern
-          : "none";
-      setProfileCardPattern(parsedPattern);
+    const rawPatternColor = (profileData as Record<string, unknown>).profile_card_pattern_color as string | null;
+    setProfileCardPatternColor(
+      /^#[0-9a-fA-F]{6}$/.test(rawPatternColor || "") ? (rawPatternColor as string) : DEFAULT_PROFILE_PATTERN_COLOR
+    );
+    const parsedPatternOpacity = Number((profileData as Record<string, unknown>).profile_card_pattern_opacity);
+    setProfileCardPatternOpacity(!Number.isNaN(parsedPatternOpacity) ? clampAlpha(parsedPatternOpacity) : DEFAULT_PROFILE_PATTERN_OPACITY);
 
-      if (/^#[0-9a-fA-F]{6}$/.test(patternData.profile_card_pattern_color || "")) {
-        setProfileCardPatternColor(patternData.profile_card_pattern_color as string);
-      } else {
-        setProfileCardPatternColor(DEFAULT_PROFILE_PATTERN_COLOR);
-      }
-
-      const parsedOpacity = Number(patternData.profile_card_pattern_opacity);
-      if (!Number.isNaN(parsedOpacity)) {
-        setProfileCardPatternOpacity(clampAlpha(parsedOpacity));
-      } else {
-        setProfileCardPatternOpacity(DEFAULT_PROFILE_PATTERN_OPACITY);
-      }
-
-      if (/^#[0-9a-fA-F]{6}$/.test(patternData.profile_box_bg_color || "")) {
-        setProfileBoxBgColor(patternData.profile_box_bg_color as string);
-      } else {
-        setProfileBoxBgColor(DEFAULT_PROFILE_BOX_BG_COLOR);
-      }
-
-      const parsedBoxOpacity = Number(patternData.profile_box_bg_opacity);
-      if (!Number.isNaN(parsedBoxOpacity)) {
-        setProfileBoxBgOpacity(clampAlpha(parsedBoxOpacity));
-      } else {
-        setProfileBoxBgOpacity(DEFAULT_PROFILE_BOX_BG_OPACITY);
-      }
-    } else {
-      setProfileCardPattern(DEFAULT_PROFILE_PATTERN);
-      setProfileCardPatternColor(DEFAULT_PROFILE_PATTERN_COLOR);
-      setProfileCardPatternOpacity(DEFAULT_PROFILE_PATTERN_OPACITY);
-      setProfileBoxBgColor(DEFAULT_PROFILE_BOX_BG_COLOR);
-      setProfileBoxBgOpacity(DEFAULT_PROFILE_BOX_BG_OPACITY);
-    }
+    const rawBoxColor = (profileData as Record<string, unknown>).profile_box_bg_color as string | null;
+    setProfileBoxBgColor(
+      /^#[0-9a-fA-F]{6}$/.test(rawBoxColor || "") ? (rawBoxColor as string) : DEFAULT_PROFILE_BOX_BG_COLOR
+    );
+    const parsedBoxOpacity = Number((profileData as Record<string, unknown>).profile_box_bg_opacity);
+    setProfileBoxBgOpacity(!Number.isNaN(parsedBoxOpacity) ? clampAlpha(parsedBoxOpacity) : DEFAULT_PROFILE_BOX_BG_OPACITY);
 
     const ownProfile = !!user?.id && user.id === profileData.id;
     setIsOwnProfile(ownProfile);
 
-    // Load the user's uploaded custom stickers so they can place them on their profile
-    if (ownProfile && user?.id) {
-      const { data: customStickerData } = await supabase
-        .from("user_stickers")
-        .select("id, image_url")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-      setUserCustomStickers(customStickerData || []);
-    } else {
-      setUserCustomStickers([]);
+    // Batch B: all remaining queries fire concurrently.
+    // Conditional queries (currentProfile, stickers, followStatus) are started
+    // as Promises before Promise.all so they're all in-flight simultaneously.
+    const currentProfileP = user?.id
+      ? supabase.from("profiles").select("username, is_admin").eq("id", user.id).single()
+      : Promise.resolve({ data: null as { username: string; is_admin: boolean } | null, error: null });
+
+    const customStickersP = ownProfile && user?.id
+      ? supabase.from("user_stickers").select("id, image_url").eq("user_id", user.id).order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] as { id: string; image_url: string }[], error: null });
+
+    const followStatusP = user?.id && user.id !== profileData.id
+      ? supabase.from("follows").select("follower_id").eq("follower_id", user.id).eq("following_id", profileData.id).maybeSingle()
+      : Promise.resolve({ data: null, error: null });
+
+    const [
+      tracksResult,
+      albumsResult,
+      ratingsResult,
+      followerCountResult,
+      followingCountResult,
+      currentProfileResult,
+      customStickersResult,
+      followStatusResult,
+    ] = await Promise.all([
+      supabase
+        .from("favorite_tracks")
+        .select("id, spotify_track_id, track_name, artist_name, album_name, image_url, position")
+        .eq("user_id", profileData.id)
+        .order("position", { ascending: true }),
+      supabase
+        .from("favorite_albums")
+        .select("id, spotify_album_id, album_name, artist_name, image_url, position")
+        .eq("user_id", profileData.id)
+        .order("position", { ascending: true }),
+      supabase
+        .from("song_ratings")
+        .select("id, spotify_track_id, track_name, artist_name, album_name, image_url, rating, review, created_at, updated_at")
+        .eq("user_id", profileData.id)
+        .order("updated_at", { ascending: false })
+        .limit(5),
+      supabase.from("follows").select("*", { count: "exact", head: true }).eq("following_id", profileData.id),
+      supabase.from("follows").select("*", { count: "exact", head: true }).eq("follower_id", profileData.id),
+      currentProfileP,
+      customStickersP,
+      followStatusP,
+    ]);
+
+    if (currentProfileResult.data) {
+      setCurrentUsername(currentProfileResult.data.username);
+      setIsCurrentUserAdmin(!!(currentProfileResult.data as { username: string; is_admin: boolean }).is_admin);
     }
-
-    const { data: tracksData, error: tracksError } = await supabase
-      .from("favorite_tracks")
-      .select("id, spotify_track_id, track_name, artist_name, album_name, image_url, position")
-      .eq("user_id", profileData.id)
-      .order("position", { ascending: true });
-
-    if (tracksError) {
-      console.error("Error loading favorite tracks:", tracksError.message);
-    } else {
-      setFavoriteTracks(tracksData || []);
+    if (!tracksResult.error) setFavoriteTracks(tracksResult.data || []);
+    else console.error("Error loading favorite tracks:", tracksResult.error.message);
+    if (!albumsResult.error) setFavoriteAlbums(albumsResult.data || []);
+    else console.error("Error loading favorite albums:", albumsResult.error.message);
+    if (!ratingsResult.error) setRecentRatings((ratingsResult.data || []) as SongRating[]);
+    else console.error("Error loading recent ratings:", ratingsResult.error.message);
+    setUserCustomStickers((customStickersResult.data || []) as UserCustomSticker[]);
+    setFollowerCount(followerCountResult.count || 0);
+    setFollowingCount(followingCountResult.count || 0);
+    setIsFollowing(!!followStatusResult.data);
+    } catch (err) {
+      console.error("loadProfile error:", err);
+      setNotFound(true);
+    } finally {
+      setLoading(false);
     }
-
-    const { data: albumsData, error: albumsError } = await supabase
-      .from("favorite_albums")
-      .select("id, spotify_album_id, album_name, artist_name, image_url, position")
-      .eq("user_id", profileData.id)
-      .order("position", { ascending: true });
-
-    if (albumsError) {
-      console.error("Error loading favorite albums:", albumsError.message);
-    } else {
-      setFavoriteAlbums(albumsData || []);
-    }
-
-    const { data: ratingsData, error: ratingsError } = await supabase
-      .from("song_ratings")
-      .select(
-        "id, spotify_track_id, track_name, artist_name, album_name, image_url, rating, review, created_at, updated_at"
-      )
-      .eq("user_id", profileData.id)
-      .order("updated_at", { ascending: false })
-      .limit(5);
-
-    if (ratingsError) {
-      console.error("Error loading recent ratings:", ratingsError.message);
-    } else {
-      setRecentRatings((ratingsData || []) as SongRating[]);
-    }
-
-    const { count: followerCountValue } = await supabase
-      .from("follows")
-      .select("*", { count: "exact", head: true })
-      .eq("following_id", profileData.id);
-
-    const { count: followingCountValue } = await supabase
-      .from("follows")
-      .select("*", { count: "exact", head: true })
-      .eq("follower_id", profileData.id);
-
-    setFollowerCount(followerCountValue || 0);
-    setFollowingCount(followingCountValue || 0);
-
-    const { data: followerRows, error: followerRowsError } = await supabase
-      .from("follows")
-      .select("follower_id")
-      .eq("following_id", profileData.id)
-      .limit(50);
-
-    if (followerRowsError) {
-      console.error("Error loading followers:", followerRowsError.message);
-      setFollowers([]);
-    } else {
-      const followerIds = (followerRows || []).map((row) => row.follower_id);
-      setFollowers(await loadFollowProfiles(followerIds));
-    }
-
-    const { data: followingRows, error: followingRowsError } = await supabase
-      .from("follows")
-      .select("following_id")
-      .eq("follower_id", profileData.id)
-      .limit(50);
-
-    if (followingRowsError) {
-      console.error("Error loading following:", followingRowsError.message);
-      setFollowingUsers([]);
-    } else {
-      const followingIds = (followingRows || []).map((row) => row.following_id);
-      setFollowingUsers(await loadFollowProfiles(followingIds));
-    }
-
-    if (user?.id && user.id !== profileData.id) {
-      const { data: followRow } = await supabase
-        .from("follows")
-        .select("follower_id")
-        .eq("follower_id", user.id)
-        .eq("following_id", profileData.id)
-        .maybeSingle();
-
-      setIsFollowing(!!followRow);
-    } else {
-      setIsFollowing(false);
-    }
-
-    setLoading(false);
   }
 
+  // Wait for auth to resolve before loading profile data (D)
   useEffect(() => {
+    if (authLoading) return;
     loadProfile();
-  }, [username]);
+  }, [username, authLoading]);
+
+  // Timeout safety net (C) — if loading takes > 8 s show a retry screen
+  useEffect(() => {
+    if (!loading) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), 8000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   useEffect(() => {
     function handleMouseMove(e: MouseEvent) {
       if (!isDraggingPanel) return;
       setPanelX(e.clientX - dragOffset.x);
-      setPanelY(e.clientY - dragOffset.y);
+      setPanelY(Math.max(0, e.clientY - dragOffset.y));
     }
 
     function handleMouseUp() {
@@ -1156,7 +1092,6 @@ export default function ProfilePage() {
 
       setIsFollowing(false);
       setFollowerCount((prev) => Math.max(0, prev - 1));
-      setFollowers((prev) => prev.filter((item) => item.id !== currentUserId));
       return;
     }
 
@@ -1174,75 +1109,6 @@ export default function ProfilePage() {
 
     setIsFollowing(true);
     setFollowerCount((prev) => prev + 1);
-    if (currentUsername) {
-      setFollowers((prev) => {
-        if (prev.some((item) => item.id === currentUserId)) {
-          return prev;
-        }
-
-        return [
-          {
-            id: currentUserId,
-            username: currentUsername,
-            display_name: currentUsername,
-            avatar_url: null,
-          },
-          ...prev,
-        ].slice(0, 50);
-      });
-    }
-  }
-
-  function renderFollowList(
-    title: string,
-    items: FollowProfile[],
-    emptyMessage: string
-  ) {
-    return (
-      <section className="rounded-2xl bg-zinc-900/70 p-5 shadow-lg">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <span className="text-xs uppercase tracking-wide text-zinc-500">
-            {items.length}
-          </span>
-        </div>
-
-        {items.length === 0 ? (
-          <p className="text-sm text-zinc-400">{emptyMessage}</p>
-        ) : (
-          <div className="space-y-3">
-            {items.map((item) => (
-              <Link
-                key={item.id}
-                href={`/profile/${item.username}`}
-                className="flex items-center gap-3 rounded-xl bg-zinc-800/70 px-3 py-2 transition hover:bg-zinc-800"
-              >
-                {item.avatar_url ? (
-                  <img
-                    src={item.avatar_url}
-                    alt={item.username}
-                    className="h-10 w-10 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-700 text-sm font-bold text-green-400">
-                    {item.display_name?.[0]?.toUpperCase() ||
-                      item.username?.[0]?.toUpperCase() ||
-                      "U"}
-                  </div>
-                )}
-
-                <div className="min-w-0">
-                  <p className="truncate font-semibold text-white">
-                    {item.display_name || item.username}
-                  </p>
-                  <p className="truncate text-sm text-zinc-400">@{item.username}</p>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
-    );
   }
 
   async function handleSaveBio(e: React.FormEvent<HTMLFormElement>) {
@@ -1977,6 +1843,13 @@ export default function ProfilePage() {
         if (!item) return section;
         return { ...section, x: item.x, y: item.y, w: item.w, h: item.h };
       });
+      // Guard against spurious re-renders: only update state when positions actually changed
+      const hasPositionChange = layout.some((section) => {
+        const item = rglLayout.find((l: LayoutItem) => l.i === section.id);
+        if (!item) return false;
+        return item.x !== section.x || item.y !== section.y || item.w !== section.w || item.h !== section.h;
+      });
+      if (!hasPositionChange) return;
       setLayout(updated);
       // Debounce save to Supabase
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -2135,7 +2008,7 @@ export default function ProfilePage() {
               saveLayout(
                 layout.map((s) =>
                   s.id === section.id
-                    ? { ...s, title, data: { content }, w: size.w, h: size.h }
+                    ? { ...s, title, data: { ...s.data, content }, w: size.w, h: size.h }
                     : s
                 )
               );
@@ -2226,7 +2099,7 @@ export default function ProfilePage() {
                 {editingRatingId === rating.id ? (
                   <div className="space-y-2">
                     <div className="flex items-center gap-3">
-                      {rating.image_url ? (<img src={rating.image_url} alt={rating.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                      {rating.image_url ? (<Image src={rating.image_url} alt={rating.track_name} width={48} height={48} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-semibold text-white">{rating.track_name}</p>
                         <p className="truncate text-xs text-zinc-400">{rating.artist_name}</p>
@@ -2244,7 +2117,7 @@ export default function ProfilePage() {
                 ) : (
                   <>
                     <div className="flex items-center gap-3">
-                      {rating.image_url ? (<img src={rating.image_url} alt={rating.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                      {rating.image_url ? (<Image src={rating.image_url} alt={rating.track_name} width={48} height={48} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-semibold text-white">{rating.track_name}</p>
                         <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{rating.artist_name}</p>
@@ -2259,6 +2132,7 @@ export default function ProfilePage() {
                       rating={rating.rating}
                       review={rating.review}
                       accentColor={theme.accentTextColor}
+                      outerBg={hexToRgba(theme.outerBgColor, Math.min(1, theme.outerBgOpacity * 1.4))}
                       compact
                     />
                     {canCustomizeSections && (
@@ -2304,7 +2178,7 @@ export default function ProfilePage() {
               <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
                 {trackResults.map((track) => (
                   <button key={track.spotify_track_id} type="button" onClick={() => setSelectedTrack(track)} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${selectedTrack?.spotify_track_id === track.spotify_track_id ? "bg-green-500/20 ring-1 ring-green-500" : "bg-zinc-800/60 hover:bg-zinc-800"}`}>
-                    {track.image_url ? (<img src={track.image_url} alt={track.track_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                    {track.image_url ? (<Image src={track.image_url} alt={track.track_name} width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-white">{track.track_name}</p>
                       <p className="truncate text-sm text-zinc-400">{track.artist_name}</p>
@@ -2317,7 +2191,7 @@ export default function ProfilePage() {
             <form onSubmit={handleAddFavoriteTrack} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
               {selectedTrack ? (
                 <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
-                  {selectedTrack.image_url ? (<img src={selectedTrack.image_url} alt={selectedTrack.track_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                  {selectedTrack.image_url ? (<Image src={selectedTrack.image_url} alt={selectedTrack.track_name} width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-white">{selectedTrack.track_name}</p>
                     <p className="truncate text-sm text-zinc-400">{selectedTrack.artist_name}</p>
@@ -2340,7 +2214,7 @@ export default function ProfilePage() {
             favoriteTracks.map((track) => (
               <div key={track.id} className="rounded-lg p-3 min-h-[7rem]" style={{ backgroundColor: hexToRgba(theme.innerBgColor, theme.innerBgOpacity) }}>
                 <div className="flex items-center gap-3">
-                  {track.image_url ? (<img src={track.image_url} alt={track.track_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                  {track.image_url ? (<Image src={track.image_url} alt={track.track_name} width={48} height={48} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-white">{track.track_name}</p>
                     <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{track.artist_name}</p>
@@ -2390,7 +2264,7 @@ export default function ProfilePage() {
               <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
                 {albumResults.map((album) => (
                   <button key={album.spotify_album_id} type="button" onClick={() => setSelectedAlbum(album)} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left transition ${selectedAlbum?.spotify_album_id === album.spotify_album_id ? "bg-green-500/20 ring-1 ring-green-500" : "bg-zinc-800/60 hover:bg-zinc-800"}`}>
-                    {album.image_url ? (<img src={album.image_url} alt={album.album_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                    {album.image_url ? (<Image src={album.image_url} alt={album.album_name} width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-white">{album.album_name}</p>
                       <p className="truncate text-sm text-zinc-400">{album.artist_name}</p>
@@ -2402,7 +2276,7 @@ export default function ProfilePage() {
             <form onSubmit={handleAddFavoriteAlbum} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
               {selectedAlbum ? (
                 <div className="flex items-center gap-3 rounded-lg bg-zinc-800/70 p-3">
-                  {selectedAlbum.image_url ? (<img src={selectedAlbum.image_url} alt={selectedAlbum.album_name} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
+                  {selectedAlbum.image_url ? (<Image src={selectedAlbum.image_url} alt={selectedAlbum.album_name} width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />) : (<div className="h-16 w-16 rounded-lg bg-zinc-700" />)}
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-white">{selectedAlbum.album_name}</p>
                     <p className="truncate text-sm text-zinc-400">{selectedAlbum.artist_name}</p>
@@ -2424,7 +2298,7 @@ export default function ProfilePage() {
             favoriteAlbums.map((album) => (
               <div key={album.id} className="rounded-lg p-3 min-h-[7rem]" style={{ backgroundColor: hexToRgba(theme.innerBgColor, theme.innerBgOpacity) }}>
                 <div className="flex items-center gap-3">
-                  {album.image_url ? (<img src={album.image_url} alt={album.album_name} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
+                  {album.image_url ? (<Image src={album.image_url} alt={album.album_name} width={48} height={48} className="h-12 w-12 rounded object-cover" />) : (<div className="h-12 w-12 rounded bg-zinc-700" />)}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-white">{album.album_name}</p>
                     <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{album.artist_name}</p>
@@ -2454,7 +2328,64 @@ export default function ProfilePage() {
   }
 
   if (loading) {
-    return <MusicNotesLoader color={noteColor} />;
+    return (
+      <main className="min-h-screen overflow-x-hidden px-6 py-8 text-white">
+        <div className="mx-auto max-w-7xl animate-pulse">
+          {/* Profile card skeleton */}
+          <div className="rounded-[28px] bg-zinc-900 p-8 shadow-lg">
+            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+              {/* Avatar */}
+              <div className="h-24 w-24 flex-shrink-0 rounded-full bg-zinc-700" />
+              <div className="flex flex-1 flex-col gap-3">
+                {/* Display name */}
+                <div className="h-7 w-48 rounded-lg bg-zinc-700" />
+                {/* Username */}
+                <div className="h-4 w-32 rounded-lg bg-zinc-800" />
+                {/* Stats row */}
+                <div className="mt-2 flex gap-6">
+                  <div className="h-4 w-20 rounded-lg bg-zinc-800" />
+                  <div className="h-4 w-20 rounded-lg bg-zinc-800" />
+                </div>
+              </div>
+            </div>
+            {/* Section skeletons */}
+            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="rounded-2xl bg-zinc-800 p-4">
+                  <div className="mb-3 h-5 w-32 rounded bg-zinc-700" />
+                  {[0, 1, 2].map((j) => (
+                    <div key={j} className="mb-2 flex items-center gap-3">
+                      <div className="h-12 w-12 flex-shrink-0 rounded-lg bg-zinc-700" />
+                      <div className="flex flex-1 flex-col gap-2">
+                        <div className="h-3 w-full rounded bg-zinc-700" />
+                        <div className="h-3 w-2/3 rounded bg-zinc-700" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (timedOut) {
+    return (
+      <main className="min-h-screen text-white flex items-center justify-center px-6">
+        <div className="rounded-2xl bg-zinc-900 p-8 text-center shadow-lg">
+          <h1 className="text-2xl font-bold">Taking too long</h1>
+          <p className="mt-3 text-zinc-400">Something may be slow. Try again?</p>
+          <button
+            onClick={() => { setTimedOut(false); loadProfile(); }}
+            className="mt-5 rounded-lg bg-green-500 px-6 py-2.5 font-semibold text-black transition hover:bg-green-400"
+          >
+            Retry
+          </button>
+        </div>
+      </main>
+    );
   }
 
   if (notFound || !profile) {
@@ -2485,8 +2416,8 @@ export default function ProfilePage() {
 
         {/* Admin action strip — only shown to admins viewing someone else's profile */}
         {isCurrentUserAdmin && !isOwnProfile && profile && (
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-900 bg-blue-950/30 px-4 py-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-blue-400">🛡️ Admin</span>
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-yellow-900/60 bg-yellow-950/20 px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#f59e0b" }}>𝄞 Admin</span>
             <button
               onClick={handleAdminToggleAdmin}
               disabled={adminActionBusy}
@@ -2520,7 +2451,7 @@ export default function ProfilePage() {
           </div>
         )}
 
-        <div className="panel-surface relative rounded-[28px] p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+        <div className="panel-surface relative rounded-[28px] p-8 shadow-lg" style={{ background: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
           {isOwnProfile && (
             <div className="relative z-10 mb-6 flex items-center justify-end gap-2">
               <div className="mr-auto inline-flex rounded-full border border-white/10 bg-zinc-800 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-400">
@@ -2885,9 +2816,11 @@ export default function ProfilePage() {
             <div className="flex flex-col gap-6 md:flex-row md:items-center">
               <div className="relative">
                 {profile.avatar_url ? (
-                  <img
+                  <Image
                     src={profile.avatar_url}
                     alt={profile.username}
+                    width={96}
+                    height={96}
                     className="h-24 w-24 rounded-full border border-white/15 object-cover shadow-[0_16px_30px_rgba(0,0,0,0.35)]"
                   />
                 ) : (
@@ -2963,14 +2896,14 @@ export default function ProfilePage() {
                     <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
                       {profile.display_name || profile.username}
                     </h1>
-                    {/* Shield badge — visible to everyone when this user is an admin */}
+                    {/* Treble clef badge — visible to everyone when this user is an admin */}
                     {profile.is_admin && (
                       <span
                         title="Admin"
-                        className="text-blue-400 text-2xl"
+                        style={{ color: "#f59e0b", fontSize: "2rem", lineHeight: 1 }}
                         aria-label="Admin"
                       >
-                        🛡️
+                        𝄞
                       </span>
                     )}
                     {isOwnProfile && (
@@ -2990,30 +2923,27 @@ export default function ProfilePage() {
                 <p className="mt-1 text-zinc-400">@{profile.username}</p>
 
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => {
-                      setShowFollowers(!showFollowers);
-                      setShowFollowing(false);
-                    }}
-                    className="cursor-pointer rounded-full border border-white/10 bg-zinc-800 px-3 py-2 transition hover:bg-zinc-700"
+                  <Link
+                    href={`/profile/${profile.username}/followers`}
+                    className="rounded-full border border-white/10 bg-zinc-800 px-3 py-1.5 text-sm transition hover:bg-zinc-700"
                   >
-                    <span className="text-2xl font-bold text-white">
-                      {followerCount}
-                    </span>{" "}
-                    <span className="text-lg font-bold text-zinc-300">Followers</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowFollowing(!showFollowing);
-                      setShowFollowers(false);
-                    }}
-                    className="cursor-pointer rounded-full border border-white/10 bg-zinc-800 px-3 py-2 transition hover:bg-zinc-700"
-                  >
-                    <span className="text-2xl font-bold text-white">
-                      {followingCount}
-                    </span>{" "}
-                    <span className="text-lg font-bold text-zinc-300">Following</span>
-                  </button>
+                    <span className="font-bold text-white">{followerCount}</span>{" "}
+                    <span className="text-zinc-300">Followers</span>
+                  </Link>
+                  {isOwnProfile ? (
+                    <Link
+                      href={`/profile/${profile.username}/following`}
+                      className="rounded-full border border-white/10 bg-zinc-800 px-3 py-1.5 text-sm transition hover:bg-zinc-700"
+                    >
+                      <span className="font-bold text-white">{followingCount}</span>{" "}
+                      <span className="text-zinc-300">Following</span>
+                    </Link>
+                  ) : (
+                    <span className="rounded-full border border-white/10 bg-zinc-800 px-3 py-1.5 text-sm">
+                      <span className="font-bold text-white">{followingCount}</span>{" "}
+                      <span className="text-zinc-300">Following</span>
+                    </span>
+                  )}
                   {!isOwnProfile && currentUserId && (
                     <button
                       onClick={handleToggleFollow}
@@ -3029,65 +2959,28 @@ export default function ProfilePage() {
                   )}
                 </div>
 
-                {showFollowers && followers.length > 0 && (
-                  <div className="mt-4 space-y-2 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-                    <h3 className="text-sm font-semibold text-white mb-3">Followers</h3>
-                    {followers.map((follower) => (
-                      <Link
-                        key={follower.id}
-                        href={`/profile/${follower.username}`}
-                        className="flex items-center gap-3 rounded-lg bg-zinc-800 px-3 py-2 transition hover:bg-zinc-700"
-                      >
-                        {follower.avatar_url ? (
-                          <img
-                            src={follower.avatar_url}
-                            alt={follower.username}
-                            className="h-8 w-8 rounded-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-green-400">
-                            {follower.display_name?.[0]?.toUpperCase() || follower.username?.[0]?.toUpperCase() || "U"}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-white">
-                            {follower.display_name || follower.username}
-                          </p>
-                          <p className="truncate text-xs text-zinc-400">@{follower.username}</p>
+                {/* Earned ocarina badges */}
+                {(profile.badges ?? []).length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {(profile.badges ?? []).map((badge) => {
+                      const meta = BADGE_META[badge];
+                      if (!meta) return null;
+                      return (
+                        <div
+                          key={badge}
+                          title={meta.name}
+                          className="flex items-center justify-center rounded-full"
+                          style={{
+                            width: 34, height: 34,
+                            background: "rgba(255,255,255,0.05)",
+                            border: `1px solid ${meta.color}44`,
+                            boxShadow: `0 0 8px ${meta.glow}`,
+                          }}
+                        >
+                          <BadgeIcon badge={badge} size={20} />
                         </div>
-                      </Link>
-                    ))}
-                  </div>
-                )}
-
-                {showFollowing && followingUsers.length > 0 && (
-                  <div className="mt-4 space-y-2 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-                    <h3 className="text-sm font-semibold text-white mb-3">Following</h3>
-                    {followingUsers.map((user) => (
-                      <Link
-                        key={user.id}
-                        href={`/profile/${user.username}`}
-                        className="flex items-center gap-3 rounded-lg bg-zinc-800 px-3 py-2 transition hover:bg-zinc-700"
-                      >
-                        {user.avatar_url ? (
-                          <img
-                            src={user.avatar_url}
-                            alt={user.username}
-                            className="h-8 w-8 rounded-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-green-400">
-                            {user.display_name?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || "U"}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-white">
-                            {user.display_name || user.username}
-                          </p>
-                          <p className="truncate text-xs text-zinc-400">@{user.username}</p>
-                        </div>
-                      </Link>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3205,25 +3098,35 @@ export default function ProfilePage() {
           onLayoutChange={(rglLayout) => handleLayoutChange(rglLayout)}
         >
           {layout.map((section) => (
-            <div key={section.id} className="relative flex flex-col rounded-xl bg-zinc-900">
+            <div key={section.id} className="relative flex flex-col rounded-xl bg-zinc-900 h-full">
               {isEditMode && (
-                <div className="flex items-center gap-1 bg-zinc-800/80 px-2 py-1">
-                  <button
-                    className="grid-drag-handle cursor-grab rounded p-1 text-zinc-500 hover:text-zinc-300 active:cursor-grabbing"
-                    title="Drag to reorder"
-                  >
-                    ⠿
-                  </button>
-                  <div className="ml-auto flex gap-1">
+                <>
+                  {/* Top-right: drag + delete controls */}
+                  <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-0.5 rounded-md bg-zinc-900/80 px-1 py-0.5 opacity-50 transition-opacity hover:opacity-100">
+                    <button
+                      className="grid-drag-handle cursor-grab p-1 text-zinc-400 hover:text-zinc-100 active:cursor-grabbing"
+                      title="Drag to reorder"
+                    >
+                      ⠿
+                    </button>
                     <button
                       onClick={() => handleRemoveSection(section.id)}
-                      className="rounded border border-red-700 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950/40"
+                      className="p-1 text-red-400 hover:text-red-300"
                       title="Remove section"
                     >
                       ✕
                     </button>
                   </div>
-                </div>
+                  {/* Bottom-right: visual resize notch (the real handle is invisible) */}
+                  <div
+                    className="pointer-events-none absolute bottom-1.5 right-1.5 z-20 h-4 w-4 opacity-60"
+                    style={{
+                      backgroundImage: "repeating-linear-gradient(-45deg, rgba(34,197,94,0.7), rgba(34,197,94,0.7) 1.5px, transparent 1.5px, transparent 4.5px)",
+                      clipPath: "polygon(100% 0, 100% 100%, 0 100%)",
+                      borderRadius: "0 0 10px 0",
+                    }}
+                  />
+                </>
               )}
               <div className="p-3">
                 {renderSectionContent(section)}

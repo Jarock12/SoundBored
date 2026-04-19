@@ -19,11 +19,11 @@
  * applied to artist names, scores, and reviews.
  */
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "../../../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../../../utils/supabase/auth";
-import TopNav from "../../../../components/TopNav";
+import { useAuth } from "../../../context/AuthProvider";
 import MusicNotesLoader from "../../../components/MusicNotesLoader";
 import NoteRating from "../../../components/NoteRating";
 import MusicReviewCard from "../../../components/MusicReviewCard";
@@ -72,6 +72,7 @@ export default function ProfileRatingsPage() {
   const params = useParams();
   const username =
     typeof params.username === "string" ? params.username : "";
+  const { user, authLoading } = useAuth();
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ratings, setRatings] = useState<SongRating[]>([]);
@@ -88,13 +89,14 @@ export default function ProfileRatingsPage() {
   const [ratingBusy, setRatingBusy] = useState("");
 
   useEffect(() => {
+    if (authLoading) return;
+
     async function loadRatingsPage() {
       if (!username) return;
 
       setLoading(true);
       setNotFound(false);
 
-      const user = await getCurrentUserSafe();
       setCurrentUserId(user?.id || null);
 
       const { data: profileData, error: profileError } = await supabase
@@ -138,7 +140,7 @@ export default function ProfileRatingsPage() {
     }
 
     loadRatingsPage();
-  }, [username]);
+  }, [username, authLoading]);
 
   function startEditRating(rating: SongRating) {
     setEditingRatingId(rating.id);
@@ -253,9 +255,11 @@ export default function ProfileRatingsPage() {
           <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
             <div className="flex items-center gap-4">
               {profile.avatar_url ? (
-                <img
+                <Image
                   src={profile.avatar_url}
                   alt={profile.username}
+                  width={64}
+                  height={64}
                   className="h-16 w-16 rounded-full object-cover"
                 />
               ) : (
@@ -297,20 +301,12 @@ export default function ProfileRatingsPage() {
             </div>
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-3">
-            <TopNav
-              showMyProfile
-              myProfileUsername={profile.username}
-              showFeed
-              showUsers
-              showRate
-              showAllRatings={false}
-            />
+          <div className="mt-5">
             <Link
               href={`/profile/${profile.username}`}
-              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
             >
-              Back to Profile
+              ← Back to Profile
             </Link>
           </div>
         </section>
@@ -336,9 +332,11 @@ export default function ProfileRatingsPage() {
                     <div className="flex gap-4">
                       <div className="shrink-0">
                         {rating.image_url ? (
-                          <img
+                          <Image
                             src={rating.image_url}
                             alt={rating.track_name}
+                            width={80}
+                            height={80}
                             className="h-20 w-20 rounded-md object-cover ring-1 ring-zinc-800"
                           />
                         ) : (

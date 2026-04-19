@@ -3,6 +3,7 @@
 // Allows users to pick tracks, customize colors, and play previews using the Spotify IFrame API.
 "use client";
 
+import Image from "next/image";
 import { useState, useRef, useEffect, useCallback } from "react";
 
 
@@ -338,9 +339,11 @@ export default function VinylPlayer({
                   className="flex w-full items-center gap-3 rounded-lg bg-zinc-800/60 p-2 text-left hover:bg-zinc-800"
                 >
                   {t.image_url && (
-                    <img
+                    <Image
                       src={t.image_url}
                       alt={t.track_name}
+                      width={40}
+                      height={40}
                       className="h-10 w-10 rounded object-cover"
                     />
                   )}
@@ -417,9 +420,11 @@ export default function VinylPlayer({
                   }}
                 >
                   {track.image_url ? (
-                    <img
+                    <Image
                       src={track.image_url}
                       alt={track.track_name}
+                      width={55}
+                      height={55}
                       className="h-full w-full object-cover"
                     />
                   ) : null}

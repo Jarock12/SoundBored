@@ -15,10 +15,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
 import NoteRating from "../components/NoteRating";
 import MusicNotesLoader from "../components/MusicNotesLoader";
+import { useAuth } from "../context/AuthProvider";
 
 type SongRating = {
   id: string;
@@ -102,6 +103,7 @@ function formatTimeAgo(iso: string) {
 
 export default function FeedPage() {
   const router = useRouter();
+  const { user, authLoading } = useAuth();
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [myUsername, setMyUsername] = useState<string | null>(null);
@@ -212,163 +214,115 @@ export default function FeedPage() {
   }
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      router.push("/login");
+      return;
+    }
+    const authedUser = user;
+
     async function loadFeed() {
       setLoading(true);
       setMessage("");
+      try {
 
-      const user = await getCurrentUserSafe();
+      setCurrentUserId(authedUser.id);
 
-      if (!user) {
-        router.push("/login");
-        return;
-      }
+      // Batch A: own profile + follow list + trending ratings + candidate profiles — all concurrent
+      const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const [myProfileResult, followsResult, weekRatingsResult, allProfilesResult] = await Promise.all([
+        supabase.from("profiles").select("username").eq("id", authedUser.id).single(),
+        supabase.from("follows").select("following_id").eq("follower_id", authedUser.id),
+        supabase
+          .from("song_ratings")
+          .select("spotify_track_id, track_name, artist_name, image_url, rating, updated_at")
+          .gte("updated_at", weekAgoIso)
+          .order("updated_at", { ascending: false })
+          .limit(500),
+        supabase
+          .from("profiles")
+          .select("id, username, display_name, avatar_url, accent_text_color")
+          .neq("id", authedUser.id)
+          .order("username", { ascending: true })
+          .limit(40),
+      ]);
 
-      setCurrentUserId(user.id);
+      if (myProfileResult.data?.username) setMyUsername(myProfileResult.data.username);
 
-      const { data: myProfileData } = await supabase
-        .from("profiles")
-        .select("username")
-        .eq("id", user.id)
-        .single();
-
-      if (myProfileData?.username) {
-        setMyUsername(myProfileData.username);
-      }
-
-      const { data: followsData, error: followsError } = await supabase
-        .from("follows")
-        .select("following_id")
-        .eq("follower_id", user.id);
-
-      if (followsError) {
-        setMessage(followsError.message);
+      if (followsResult.error) {
+        setMessage(followsResult.error.message);
         setLoading(false);
         return;
       }
 
-      const followingIds = (followsData || []).map((row) => row.following_id);
+      const followingIds = (followsResult.data || []).map((row) => row.following_id);
       setFollowingCount(followingIds.length);
 
-      // This week's top tracks from app activity (ratings), used to keep the feed lively.
-      const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: weekRatings, error: weekRatingsError } = await supabase
-        .from("song_ratings")
-        .select("spotify_track_id, track_name, artist_name, image_url, rating, updated_at")
-        .gte("updated_at", weekAgoIso)
-        .order("updated_at", { ascending: false })
-        .limit(500);
-
-      if (weekRatingsError) {
-        setMessage(weekRatingsError.message);
-      } else {
-        // Group the last 500 ratings by track, accumulating a count and sum
-        // so we can compute the average and sort by popularity.
-        const grouped = new Map<
-          string,
-          {
-            spotify_track_id: string;
-            track_name: string;
-            artist_name: string;
-            image_url: string | null;
-            ratingsCount: number;
-            ratingSum: number;
-          }
-        >();
-
-        for (const row of weekRatings || []) {
+      // Process trending tracks
+      if (!weekRatingsResult.error) {
+        const grouped = new Map<string, { spotify_track_id: string; track_name: string; artist_name: string; image_url: string | null; ratingsCount: number; ratingSum: number }>();
+        for (const row of weekRatingsResult.data || []) {
           const key = row.spotify_track_id;
           const current = grouped.get(key);
           if (current) {
             current.ratingsCount += 1;
             current.ratingSum += Number(row.rating || 0);
           } else {
-            grouped.set(key, {
-              spotify_track_id: row.spotify_track_id,
-              track_name: row.track_name,
-              artist_name: row.artist_name,
-              image_url: row.image_url,
-              ratingsCount: 1,
-              ratingSum: Number(row.rating || 0),
-            });
+            grouped.set(key, { spotify_track_id: row.spotify_track_id, track_name: row.track_name, artist_name: row.artist_name, image_url: row.image_url, ratingsCount: 1, ratingSum: Number(row.rating || 0) });
           }
         }
-
-        // Sort: most-rated tracks first; break ties by average rating
-        const topTracks = Array.from(grouped.values())
-          .map((track) => ({
-            spotify_track_id: track.spotify_track_id,
-            track_name: track.track_name,
-            artist_name: track.artist_name,
-            image_url: track.image_url,
-            ratingsCount: track.ratingsCount,
-            averageRating:
-              track.ratingsCount > 0 ? track.ratingSum / track.ratingsCount : 0,
-          }))
-          .sort((a, b) => {
-            if (b.ratingsCount !== a.ratingsCount) {
-              return b.ratingsCount - a.ratingsCount;
-            }
-            return b.averageRating - a.averageRating;
-          })
-          .slice(0, 5); // Only show the top 5 trending tracks
-
-        setTrendingTracks(topTracks);
+        setTrendingTracks(
+          Array.from(grouped.values())
+            .map((t) => ({ ...t, averageRating: t.ratingsCount > 0 ? t.ratingSum / t.ratingsCount : 0 }))
+            .sort((a, b) => b.ratingsCount !== a.ratingsCount ? b.ratingsCount - a.ratingsCount : b.averageRating - a.averageRating)
+            .slice(0, 5)
+        );
       }
 
-      const { data: allProfiles, error: allProfilesError } = await supabase
-        .from("profiles")
-        .select("id, username, display_name, avatar_url, accent_text_color")
-        .neq("id", user.id)
-        .order("username", { ascending: true })
-        .limit(40);
+      // Batch B: suggestions follow-status rows + feed ratings — all concurrent
+      const candidates = allProfilesResult.data || [];
+      const candidateIds = candidates.map((p) => p.id);
 
-      if (allProfilesError) {
-        setMessage(allProfilesError.message);
-      } else {
-        const candidates = allProfiles || [];
-        const candidateIds = candidates.map((profile) => profile.id);
+      const feedRatingsP = followingIds.length > 0
+        ? supabase
+            .from("song_ratings")
+            .select("id, user_id, spotify_track_id, track_name, artist_name, album_name, image_url, rating, review, created_at, updated_at")
+            .in("user_id", followingIds)
+            .order("updated_at", { ascending: false })
+            .limit(50)
+        : Promise.resolve({ data: [] as SongRating[], error: null });
 
-        if (candidateIds.length > 0) {
-          const { data: followingRows } = await supabase
-            .from("follows")
-            .select("following_id")
-            .eq("follower_id", user.id)
-            .in("following_id", candidateIds);
+      const followingRowsP = candidateIds.length > 0
+        ? supabase.from("follows").select("following_id").eq("follower_id", authedUser.id).in("following_id", candidateIds)
+        : Promise.resolve({ data: [] as { following_id: string }[], error: null });
 
-          const { data: followerRows } = await supabase
-            .from("follows")
-            .select("following_id")
-            .in("following_id", candidateIds);
+      const followerRowsP = candidateIds.length > 0
+        ? supabase.from("follows").select("following_id").in("following_id", candidateIds)
+        : Promise.resolve({ data: [] as { following_id: string }[], error: null });
 
-          const followingSet = new Set(
-            (followingRows || []).map((row) => row.following_id)
-          );
+      const [ratingsResult, followingRowsResult, followerRowsResult] = await Promise.all([
+        feedRatingsP,
+        followingRowsP,
+        followerRowsP,
+      ]);
 
-          const followerCountMap = new Map<string, number>();
-          for (const id of candidateIds) {
-            followerCountMap.set(id, 0);
-          }
-          for (const row of followerRows || []) {
-            followerCountMap.set(
-              row.following_id,
-              (followerCountMap.get(row.following_id) || 0) + 1
-            );
-          }
-
-          const suggestions: SearchResult[] = candidates
-            .map((profile) => ({
-              ...profile,
-              followerCount: followerCountMap.get(profile.id) || 0,
-              isFollowing: followingSet.has(profile.id),
-            }))
-            .filter((profile) => !profile.isFollowing)
-            .sort((a, b) => b.followerCount - a.followerCount)
-            .slice(0, 5);
-
-          setSuggestedUsers(suggestions);
-        } else {
-          setSuggestedUsers([]);
+      // Build suggestions
+      if (!allProfilesResult.error && candidateIds.length > 0) {
+        const followingSet = new Set((followingRowsResult.data || []).map((r) => r.following_id));
+        const followerCountMap = new Map<string, number>();
+        for (const id of candidateIds) followerCountMap.set(id, 0);
+        for (const row of followerRowsResult.data || []) {
+          followerCountMap.set(row.following_id, (followerCountMap.get(row.following_id) || 0) + 1);
         }
+        setSuggestedUsers(
+          candidates
+            .map((p) => ({ ...p, followerCount: followerCountMap.get(p.id) || 0, isFollowing: followingSet.has(p.id) }))
+            .filter((p) => !p.isFollowing)
+            .sort((a, b) => b.followerCount - a.followerCount)
+            .slice(0, 5)
+        );
+      } else {
+        setSuggestedUsers([]);
       }
 
       if (followingIds.length === 0) {
@@ -377,55 +331,41 @@ export default function FeedPage() {
         return;
       }
 
-      const { data: ratingsData, error: ratingsError } = await supabase
-        .from("song_ratings")
-        .select(
-          "id, user_id, spotify_track_id, track_name, artist_name, album_name, image_url, rating, review, created_at, updated_at"
-        )
-        .in("user_id", followingIds)
-        .order("updated_at", { ascending: false })
-        .limit(50);
-
-      if (ratingsError) {
-        setMessage(ratingsError.message);
+      if (ratingsResult.error) {
+        setMessage(ratingsResult.error.message);
         setLoading(false);
         return;
       }
 
-      const ratingUsers = Array.from(
-        new Set((ratingsData || []).map((rating) => rating.user_id))
-      );
-
+      // Batch C: fetch profiles for the rating authors
+      const ratingUsers = Array.from(new Set((ratingsResult.data || []).map((r) => r.user_id)));
       let profileMap = new Map<string, ProfileSummary>();
-
       if (ratingUsers.length > 0) {
         const { data: profileData, error: profileError } = await supabase
           .from("profiles")
           .select("id, username, display_name, avatar_url, accent_text_color")
           .in("id", ratingUsers);
-
         if (profileError) {
           setMessage(profileError.message);
           setLoading(false);
           return;
         }
-
-        profileMap = new Map(
-          (profileData || []).map((profile) => [profile.id, profile])
-        );
+        profileMap = new Map((profileData || []).map((p) => [p.id, p]));
       }
 
-      const mergedItems: FeedItem[] = (ratingsData || []).map((rating) => ({
-        ...(rating as SongRating),
-        profile: profileMap.get(rating.user_id) || null,
-      }));
-
-      setFeedItems(mergedItems);
-      setLoading(false);
+      setFeedItems(
+        (ratingsResult.data || []).map((rating) => ({ ...(rating as SongRating), profile: profileMap.get(rating.user_id) || null }))
+      );
+      } catch (err) {
+        console.error("loadFeed error:", err);
+        setMessage("Something went wrong loading the feed. Please refresh.");
+      } finally {
+        setLoading(false);
+      }
     }
 
     loadFeed();
-  }, [router]);
+  }, [user, authLoading, router]);
 
   if (loading) {
     return <MusicNotesLoader />;
@@ -476,9 +416,11 @@ export default function FeedPage() {
                   >
                     <div className="flex items-center gap-3">
                       {user.avatar_url ? (
-                        <img
+                        <Image
                           src={user.avatar_url}
                           alt={user.username}
+                          width={32}
+                          height={32}
                           className="h-8 w-8 rounded-full object-cover"
                         />
                       ) : (
@@ -533,9 +475,11 @@ export default function FeedPage() {
                     </span>
                   </div>
                   {track.image_url ? (
-                    <img
+                    <Image
                       src={track.image_url}
                       alt={track.track_name}
+                      width={200}
+                      height={112}
                       className="mb-2 h-28 w-full rounded-lg object-cover"
                     />
                   ) : (
@@ -576,9 +520,11 @@ export default function FeedPage() {
                 >
                   <div className="mb-2 flex items-center gap-2">
                     {user.avatar_url ? (
-                      <img
+                      <Image
                         src={user.avatar_url}
                         alt={user.username}
+                        width={36}
+                        height={36}
                         className="h-9 w-9 rounded-full object-cover"
                       />
                     ) : (
@@ -648,9 +594,11 @@ export default function FeedPage() {
               >
                 <div className="flex items-start gap-4">
                   {item.image_url ? (
-                    <img
+                    <Image
                       src={item.image_url}
                       alt={item.track_name}
+                      width={80}
+                      height={80}
                       className="h-20 w-20 rounded-xl object-cover"
                     />
                   ) : (
@@ -662,9 +610,11 @@ export default function FeedPage() {
                       <div>
                         <div className="flex items-center gap-2">
                           {item.profile?.avatar_url ? (
-                            <img
+                            <Image
                               src={item.profile.avatar_url}
                               alt={item.profile.username}
+                              width={24}
+                              height={24}
                               className="h-6 w-6 rounded-full object-cover"
                             />
                           ) : (

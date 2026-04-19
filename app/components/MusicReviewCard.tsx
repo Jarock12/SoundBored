@@ -7,6 +7,8 @@ type MusicReviewCardProps = {
   review?: string | null;
   accentColor?: string;
   compact?: boolean;
+  /** Optional pre-computed CSS color string (e.g. rgba()) to override the default dark background */
+  outerBg?: string;
 };
 
 export default function MusicReviewCard({
@@ -14,14 +16,16 @@ export default function MusicReviewCard({
   review,
   accentColor = "#22c55e",
   compact = false,
+  outerBg,
 }: MusicReviewCardProps) {
   const trimmedReview = review?.trim();
 
   return (
     <div
-      className={`overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/80 shadow-[0_16px_40px_rgba(0,0,0,0.28)] ${
+      className={`overflow-hidden rounded-2xl border border-white/10 shadow-[0_16px_40px_rgba(0,0,0,0.28)] ${
         compact ? "mt-3" : "mt-5"
-      }`}
+      } ${outerBg ? "" : "bg-zinc-950/80"}`}
+      style={outerBg ? { background: outerBg } : undefined}
     >
       <div
         className={compact ? "px-4 py-3" : "px-5 py-4"}
@@ -32,10 +36,10 @@ export default function MusicReviewCard({
       >
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em]" style={{ color: accentColor }}>
               Review
             </p>
-            <p className="mt-1 text-xs text-zinc-400">
+            <p className="mt-1 text-xs" style={{ color: accentColor }}>
               Music-note diary entry
             </p>
           </div>

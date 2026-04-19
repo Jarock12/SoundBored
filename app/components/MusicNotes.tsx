@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
+import { useAuth } from "../context/AuthProvider";
 
 const NOTES = ["♪", "♫", "♬", "♩", "𝄞"];
 const NOTE_COUNT = 35;
@@ -35,20 +35,36 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r, g, b };
 }
 
+const STORAGE_KEY = "soundbored_note_color";
+
 export default function MusicNotes() {
   const pathname = usePathname();
+  const { user } = useAuth();
   const [noteColor, setNoteColor] = useState(DEFAULT_NOTE_COLOR);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const notesRef = useRef<Note[]>([]);
   const mouseRef = useRef({ x: -1000, y: -1000 });
   const frameRef = useRef<number>(0);
+  const lastFetchKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function resolveNoteColor() {
+      const cached = localStorage.getItem(STORAGE_KEY);
+      if (cached && isValidHexColor(cached)) {
+        setNoteColor(cached);
+      }
+
       const pathParts = pathname.split("/").filter(Boolean);
       const isProfileRoute = pathParts[0] === "profile" && !!pathParts[1];
+      const fetchKey = isProfileRoute
+        ? `profile:${decodeURIComponent(pathParts[1]).toLowerCase()}`
+        : user ? `self:${user.id}` : "anon";
+
+      if (fetchKey === lastFetchKeyRef.current && cached && isValidHexColor(cached)) {
+        return;
+      }
 
       if (isProfileRoute) {
         const username = decodeURIComponent(pathParts[1]);
@@ -63,13 +79,18 @@ export default function MusicNotes() {
             ? data.note_color
             : DEFAULT_NOTE_COLOR;
           setNoteColor(color);
+          localStorage.setItem(STORAGE_KEY, color);
+          lastFetchKeyRef.current = fetchKey;
         }
         return;
       }
 
-      const user = await getCurrentUserSafe();
+      // Non-profile route: use the user from context (no extra auth call needed).
       if (!user) {
-        if (!cancelled) setNoteColor(DEFAULT_NOTE_COLOR);
+        if (!cancelled) {
+          setNoteColor(DEFAULT_NOTE_COLOR);
+          lastFetchKeyRef.current = fetchKey;
+        }
         return;
       }
 
@@ -84,6 +105,8 @@ export default function MusicNotes() {
           ? data.note_color
           : DEFAULT_NOTE_COLOR;
         setNoteColor(color);
+        localStorage.setItem(STORAGE_KEY, color);
+        lastFetchKeyRef.current = fetchKey;
       }
     }
 
@@ -92,7 +115,7 @@ export default function MusicNotes() {
     return () => {
       cancelled = true;
     };
-  }, [pathname]);
+  }, [pathname, user]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

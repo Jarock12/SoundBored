@@ -17,6 +17,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import MusicNotes from "./components/MusicNotes";
 import NavBar from "../components/NavBar";
+import { AuthProvider } from "./context/AuthProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -44,14 +45,16 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-black">
-        {/* Animated floating music notes rendered on a fixed canvas (z-index 1) */}
-        <MusicNotes />
-        {/* Universal Navigation Bar */}
-        <NavBar />
-        {/* Page content sits above the canvas (z-index 2) so it stays interactive */}
-        <div className="app-shell relative z-[2] flex flex-col flex-1 pt-24">
-          {children}
-        </div>
+        <AuthProvider>
+          {/* Animated floating music notes rendered on a fixed canvas (z-index 1) */}
+          <MusicNotes />
+          {/* Universal Navigation Bar */}
+          <NavBar />
+          {/* Page content sits above the canvas (z-index 2) so it stays interactive */}
+          <div className="app-shell relative z-[2] flex flex-col flex-1 pt-16">
+            {children}
+          </div>
+        </AuthProvider>
       </body>
     </html>
   );
