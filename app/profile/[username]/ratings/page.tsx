@@ -303,6 +303,7 @@ export default function ProfileRatingsPage() {
               showFeed
               showUsers
               showRate
+              showAllRatings={false}
             />
             <Link
               href={`/profile/${profile.username}`}

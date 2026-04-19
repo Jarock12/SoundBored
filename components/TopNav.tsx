@@ -29,6 +29,7 @@ type TopNavProps = {
   showFeed?: boolean;
   showUsers?: boolean;
   showRate?: boolean;
+  showAllRatings?: boolean;
   showProfile?: boolean;
   profileUsername?: string | null;
   showLogout?: boolean;
@@ -46,6 +47,7 @@ export default function TopNav({
   showFeed = true,
   showUsers = true,
   showRate = true,
+  showAllRatings = true,
   showProfile = false,
   profileUsername = null,
   showLogout = false,
@@ -93,6 +95,15 @@ export default function TopNav({
           className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800"
         >
           Rate a Song
+        </Link>
+      )}
+
+      {showAllRatings && myProfileUsername && (
+        <Link
+          href={`/profile/${myProfileUsername}/ratings`}
+          className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800"
+        >
+          All Ratings
         </Link>
       )}
 
