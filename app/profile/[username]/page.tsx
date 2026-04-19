@@ -2808,7 +2808,7 @@ export default function ProfilePage() {
             )}
             <div className="relative z-10">
               <div className="flex items-center gap-5">
-              <div className="relative group">
+              <div className="relative">
                 {profile.avatar_url ? (
                   <img
                     src={profile.avatar_url}
@@ -2823,8 +2823,30 @@ export default function ProfilePage() {
                   </div>
                 )}
                 {isOwnProfile && (
-                  <label className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-full bg-black/60 opacity-0 transition group-hover:opacity-100">
-                    <span className="text-xs font-semibold text-white">Edit</span>
+                  <label
+                    className={`absolute -bottom-1 -right-1 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-white shadow-lg transition hover:bg-zinc-800 ${
+                      avatarUploading ? "opacity-60" : ""
+                    }`}
+                    title={avatarUploading ? "Uploading..." : "Change profile picture"}
+                  >
+                    {avatarUploading ? (
+                      <span className="text-[10px] font-semibold">...</span>
+                    ) : (
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M4 7h3l2-2h6l2 2h3v12H4z" />
+                        <circle cx="12" cy="13" r="4" />
+                      </svg>
+                    )}
+                    <span className="sr-only">Change profile picture</span>
                     <input
                       type="file"
                       accept="image/*"
