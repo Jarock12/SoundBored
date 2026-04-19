@@ -13,6 +13,8 @@
  * updates the canvas color accordingly.
  */
 import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import MusicNotes from "./components/MusicNotes";
@@ -46,7 +48,20 @@ export default function RootLayout({
         {/* Animated floating music notes rendered on a fixed canvas (z-index 1) */}
         <MusicNotes />
         {/* Page content sits above the canvas (z-index 2) so it stays interactive */}
-        <div className="relative z-[2] flex flex-col flex-1">
+        <div className="app-shell relative z-[2] flex flex-col flex-1">
+          <Link
+            href="/"
+            className="fixed left-5 top-5 z-[3] rounded-2xl border border-white/10 bg-black/35 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.32)] backdrop-blur-md transition hover:bg-black/50"
+          >
+            <Image
+              src="/soundbored-logo.png"
+              alt="SoundBored logo"
+              width={56}
+              height={56}
+              className="h-14 w-14 rounded-xl object-cover"
+              priority
+            />
+          </Link>
           {children}
         </div>
       </body>

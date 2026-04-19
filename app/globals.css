@@ -6,6 +6,51 @@
   scrollbar-width: thin;
 }
 
+html {
+  background:
+    radial-gradient(circle at top, rgba(34, 197, 94, 0.14), transparent 28%),
+    radial-gradient(circle at 85% 12%, rgba(59, 130, 246, 0.1), transparent 24%),
+    linear-gradient(180deg, #050816 0%, #09090b 42%, #05070f 100%);
+  background-attachment: fixed;
+}
+
+body {
+  background: transparent;
+  color: #f4f4f5;
+}
+
+.app-shell {
+  position: relative;
+}
+
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 30%),
+    radial-gradient(circle at 20% 20%, rgba(34, 197, 94, 0.06), transparent 20%);
+  opacity: 0.7;
+}
+
+.panel-surface {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(24, 24, 27, 0.9), rgba(10, 10, 12, 0.78));
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(16px);
+}
+
+.nav-chip {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(24, 24, 27, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.nav-chip:hover {
+  background: rgba(39, 39, 42, 0.92);
+}
+
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;

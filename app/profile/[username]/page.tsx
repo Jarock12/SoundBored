@@ -47,6 +47,7 @@ import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
 import ConcertTicketStubSection from "../../components/profile/ConcertTicketStubSection";
 import AddSectionModal from "../../components/profile/AddSectionModal";
+import MusicReviewCard from "../../components/MusicReviewCard";
 import StickerLayer, {
   type PlacedSticker,
   type UserCustomSticker,
@@ -395,6 +396,32 @@ type SongRating = {
   updated_at: string;
 };
 
+type FollowProfile = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
+async function loadFollowProfiles(userIds: string[]): Promise<FollowProfile[]> {
+  if (userIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, username, display_name, avatar_url")
+    .in("id", userIds);
+
+  if (error || !data) {
+    console.error("Error loading follow profiles:", error?.message);
+    return [];
+  }
+
+  const profileMap = new Map(data.map((item) => [item.id, item as FollowProfile]));
+  return userIds
+    .map((id) => profileMap.get(id))
+    .filter((item): item is FollowProfile => !!item);
+}
+
 
 
 export default function ProfilePage() {
@@ -418,6 +445,8 @@ export default function ProfilePage() {
 
   const [followerCount, setFollowerCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
+  const [followers, setFollowers] = useState<FollowProfile[]>([]);
+  const [followingUsers, setFollowingUsers] = useState<FollowProfile[]>([]);
 
   const [bioDraft, setBioDraft] = useState("");
   const [bioMessage, setBioMessage] = useState("");
@@ -820,6 +849,34 @@ export default function ProfilePage() {
     setFollowerCount(followerCountValue || 0);
     setFollowingCount(followingCountValue || 0);
 
+    const { data: followerRows, error: followerRowsError } = await supabase
+      .from("follows")
+      .select("follower_id")
+      .eq("following_id", profileData.id)
+      .limit(50);
+
+    if (followerRowsError) {
+      console.error("Error loading followers:", followerRowsError.message);
+      setFollowers([]);
+    } else {
+      const followerIds = (followerRows || []).map((row) => row.follower_id);
+      setFollowers(await loadFollowProfiles(followerIds));
+    }
+
+    const { data: followingRows, error: followingRowsError } = await supabase
+      .from("follows")
+      .select("following_id")
+      .eq("follower_id", profileData.id)
+      .limit(50);
+
+    if (followingRowsError) {
+      console.error("Error loading following:", followingRowsError.message);
+      setFollowingUsers([]);
+    } else {
+      const followingIds = (followingRows || []).map((row) => row.following_id);
+      setFollowingUsers(await loadFollowProfiles(followingIds));
+    }
+
     if (user?.id && user.id !== profileData.id) {
       const { data: followRow } = await supabase
         .from("follows")
@@ -1021,6 +1078,7 @@ export default function ProfilePage() {
 
       setIsFollowing(false);
       setFollowerCount((prev) => Math.max(0, prev - 1));
+      setFollowers((prev) => prev.filter((item) => item.id !== currentUserId));
       return;
     }
 
@@ -1038,6 +1096,75 @@ export default function ProfilePage() {
 
     setIsFollowing(true);
     setFollowerCount((prev) => prev + 1);
+    if (currentUsername) {
+      setFollowers((prev) => {
+        if (prev.some((item) => item.id === currentUserId)) {
+          return prev;
+        }
+
+        return [
+          {
+            id: currentUserId,
+            username: currentUsername,
+            display_name: currentUsername,
+            avatar_url: null,
+          },
+          ...prev,
+        ].slice(0, 50);
+      });
+    }
+  }
+
+  function renderFollowList(
+    title: string,
+    items: FollowProfile[],
+    emptyMessage: string
+  ) {
+    return (
+      <section className="rounded-2xl bg-zinc-900/70 p-5 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <span className="text-xs uppercase tracking-wide text-zinc-500">
+            {items.length}
+          </span>
+        </div>
+
+        {items.length === 0 ? (
+          <p className="text-sm text-zinc-400">{emptyMessage}</p>
+        ) : (
+          <div className="space-y-3">
+            {items.map((item) => (
+              <Link
+                key={item.id}
+                href={`/profile/${item.username}`}
+                className="flex items-center gap-3 rounded-xl bg-zinc-800/70 px-3 py-2 transition hover:bg-zinc-800"
+              >
+                {item.avatar_url ? (
+                  <img
+                    src={item.avatar_url}
+                    alt={item.username}
+                    className="h-10 w-10 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-700 text-sm font-bold text-green-400">
+                    {item.display_name?.[0]?.toUpperCase() ||
+                      item.username?.[0]?.toUpperCase() ||
+                      "U"}
+                  </div>
+                )}
+
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-white">
+                    {item.display_name || item.username}
+                  </p>
+                  <p className="truncate text-sm text-zinc-400">@{item.username}</p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+    );
   }
 
   async function handleSaveBio(e: React.FormEvent<HTMLFormElement>) {
@@ -2050,6 +2177,12 @@ export default function ProfilePage() {
                       </div>
                     </div>
                     {rating.review && (<p className="mt-1.5 truncate text-xs italic" style={{ color: theme.accentTextColor }}>&ldquo;{rating.review}&rdquo;</p>)}
+                    <MusicReviewCard
+                      rating={rating.rating}
+                      review={rating.review}
+                      accentColor={theme.accentTextColor}
+                      compact
+                    />
                     {canCustomizeSections && (
                       <div className="mt-2 flex flex-wrap items-center gap-1">
                         <button onClick={() => startEditRating(rating)} disabled={ratingBusy !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">✎</button>
@@ -2264,6 +2397,7 @@ export default function ProfilePage() {
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
 
         {/* ── Top nav row ── sits above the profile card, right-aligned in the black space */}
+        <div className="rounded-2xl border border-white/8 bg-black/20 px-3 py-3 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-end gap-3">
           {isOwnProfile ? (
             <TopNav
@@ -2305,6 +2439,7 @@ export default function ProfilePage() {
             </>
           )}
         </div>
+        </div>
 
         {/* Admin action strip — only shown to admins viewing someone else's profile */}
         {isCurrentUserAdmin && !isOwnProfile && profile && (
@@ -2332,9 +2467,12 @@ export default function ProfilePage() {
           </div>
         )}
 
-        <div className="relative rounded-2xl p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+        <div className="panel-surface relative overflow-hidden rounded-[28px] p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-44 bg-gradient-to-r from-green-500/18 via-emerald-400/10 to-sky-500/14" />
+          <div className="pointer-events-none absolute -left-10 top-10 h-36 w-36 rounded-full bg-green-400/12 blur-3xl" />
+          <div className="pointer-events-none absolute right-0 top-0 h-40 w-40 rounded-full bg-sky-400/10 blur-3xl" />
           {isOwnProfile && (
-            <div className="mb-4 flex items-center justify-end gap-2">
+            <div className="relative z-10 mb-6 flex items-center justify-end gap-2">
               {isEditMode && (
                 <button
                   onClick={() => setShowStickerToolbar((prev) => !prev)}
@@ -2669,7 +2807,7 @@ export default function ProfilePage() {
               </div>
             </>
           )}
-          <div className="relative overflow-hidden rounded-xl">
+          <div className="relative z-10 overflow-hidden rounded-[24px] border border-white/10 bg-black/18 px-6 py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-sm">
             {profileCardPattern !== "none" && (
               <div
                 className="pointer-events-none absolute inset-0 z-0"
@@ -2681,24 +2819,46 @@ export default function ProfilePage() {
               />
             )}
             <div className="relative z-10">
-              <div className="flex items-center gap-5">
-              <div className="relative group">
+              <div className="flex flex-col gap-6 md:flex-row md:items-center">
+              <div className="relative">
                 {profile.avatar_url ? (
                   <img
                     src={profile.avatar_url}
                     alt={profile.username}
-                    className="h-20 w-20 rounded-full object-cover"
+                    className="h-24 w-24 rounded-full border border-white/15 object-cover shadow-[0_16px_30px_rgba(0,0,0,0.35)]"
                   />
                 ) : (
-                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-zinc-800 text-3xl font-bold" style={{ color: accentTextColor }}>
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-3xl font-bold shadow-[0_16px_30px_rgba(0,0,0,0.35)]" style={{ color: accentTextColor }}>
                     {profile.display_name?.[0]?.toUpperCase() ||
                       profile.username?.[0]?.toUpperCase() ||
                       "U"}
                   </div>
                 )}
                 {isOwnProfile && (
-                  <label className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-full bg-black/60 opacity-0 transition group-hover:opacity-100">
-                    <span className="text-xs font-semibold text-white">Edit</span>
+                  <label
+                    className={`absolute -bottom-1 -right-1 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-white shadow-lg transition hover:bg-zinc-800 ${
+                      avatarUploading ? "opacity-60" : ""
+                    }`}
+                    title={avatarUploading ? "Uploading..." : "Change profile picture"}
+                  >
+                    {avatarUploading ? (
+                      <span className="text-[10px] font-semibold">...</span>
+                    ) : (
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M4 7h3l2-2h6l2 2h3v12H4z" />
+                        <circle cx="12" cy="13" r="4" />
+                      </svg>
+                    )}
+                    <span className="sr-only">Change profile picture</span>
                     <input
                       type="file"
                       accept="image/*"
@@ -2710,7 +2870,10 @@ export default function ProfilePage() {
                 )}
               </div>
 
-              <div>
+              <div className="min-w-0 flex-1">
+                <div className="mb-3 inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-400">
+                  SoundBored Profile
+                </div>
                 {isEditingDisplayName ? (
                   <div className="flex items-center gap-2">
                     <input
@@ -2737,7 +2900,7 @@ export default function ProfilePage() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <h1 className="text-3xl font-bold">
+                    <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
                       {profile.display_name || profile.username}
                     </h1>
                     {/* Shield badge — visible to everyone when this user is an admin */}
@@ -2764,16 +2927,16 @@ export default function ProfilePage() {
                     )}
                   </div>
                 )}
-                <p className="text-zinc-400">@{profile.username}</p>
+                <p className="mt-1 text-zinc-400">@{profile.username}</p>
 
-                <div className="mt-3 flex gap-4 text-sm text-zinc-400">
-                  <span>
+                <div className="mt-4 flex flex-wrap gap-3 text-sm text-zinc-300">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                     <span className="font-semibold text-white">
                       {followerCount}
                     </span>{" "}
                     followers
                   </span>
-                  <span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                     <span className="font-semibold text-white">
                       {followingCount}
                     </span>{" "}
@@ -2786,7 +2949,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <div className="mt-6 border-t pt-6" style={{ borderTopColor: profileCardPatternColor }}>
+          <div className="relative z-10 mt-6 border-t pt-6" style={{ borderTopColor: profileCardPatternColor }}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">Bio</h2>
 
@@ -2805,7 +2968,7 @@ export default function ProfilePage() {
             </div>
 
             {!isEditingBio ? (
-              <p className="text-zinc-300">
+              <p className="max-w-3xl text-[15px] leading-7 text-zinc-300">
                 {profile.bio?.trim()
                   ? profile.bio
                   : isOwnProfile
@@ -2844,6 +3007,19 @@ export default function ProfilePage() {
                   )}
                 </div>
               </form>
+            )}
+          </div>
+
+          <div className="mt-6 grid gap-4 border-t pt-6 md:grid-cols-2" style={{ borderTopColor: profileCardPatternColor }}>
+            {renderFollowList(
+              "Followers",
+              followers,
+              "No followers yet."
+            )}
+            {renderFollowList(
+              "Following",
+              followingUsers,
+              "Not following anyone yet."
             )}
           </div>
         </div>
