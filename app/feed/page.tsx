@@ -490,7 +490,7 @@ export default function FeedPage() {
                   </p>
                   <p className="truncate text-xs text-zinc-400">{track.artist_name}</p>
                   <p className="mt-1 text-xs text-zinc-500">
-                    Avg: {track.averageRating.toFixed(1)}/5
+                    Avg: {track.averageRating.toFixed(1)}/5.0
                   </p>
                 </article>
               ))}
