@@ -2390,6 +2390,7 @@ export default function ProfilePage() {
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
 
         {/* ── Top nav row ── sits above the profile card, right-aligned in the black space */}
+        <div className="rounded-2xl border border-white/8 bg-black/20 px-3 py-3 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-end gap-3">
           {isOwnProfile ? (
             <TopNav
@@ -2431,6 +2432,7 @@ export default function ProfilePage() {
             </>
           )}
         </div>
+        </div>
 
         {/* Admin action strip — only shown to admins viewing someone else's profile */}
         {isCurrentUserAdmin && !isOwnProfile && profile && (
@@ -2458,9 +2460,12 @@ export default function ProfilePage() {
           </div>
         )}
 
-        <div className="relative rounded-2xl p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+        <div className="panel-surface relative overflow-hidden rounded-[28px] p-8 shadow-lg" style={{ backgroundColor: hexToRgba(profileBoxBgColor, profileBoxBgOpacity) }}>
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-44 bg-gradient-to-r from-green-500/18 via-emerald-400/10 to-sky-500/14" />
+          <div className="pointer-events-none absolute -left-10 top-10 h-36 w-36 rounded-full bg-green-400/12 blur-3xl" />
+          <div className="pointer-events-none absolute right-0 top-0 h-40 w-40 rounded-full bg-sky-400/10 blur-3xl" />
           {isOwnProfile && (
-            <div className="mb-4 flex items-center justify-end gap-2">
+            <div className="relative z-10 mb-6 flex items-center justify-end gap-2">
               {isEditMode && (
                 <button
                   onClick={() => setShowStickerToolbar((prev) => !prev)}
@@ -2795,7 +2800,7 @@ export default function ProfilePage() {
               </div>
             </>
           )}
-          <div className="relative overflow-hidden rounded-xl">
+          <div className="relative z-10 overflow-hidden rounded-[24px] border border-white/10 bg-black/18 px-6 py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-sm">
             {profileCardPattern !== "none" && (
               <div
                 className="pointer-events-none absolute inset-0 z-0"
@@ -2807,16 +2812,16 @@ export default function ProfilePage() {
               />
             )}
             <div className="relative z-10">
-              <div className="flex items-center gap-5">
+              <div className="flex flex-col gap-6 md:flex-row md:items-center">
               <div className="relative">
                 {profile.avatar_url ? (
                   <img
                     src={profile.avatar_url}
                     alt={profile.username}
-                    className="h-20 w-20 rounded-full object-cover"
+                    className="h-24 w-24 rounded-full border border-white/15 object-cover shadow-[0_16px_30px_rgba(0,0,0,0.35)]"
                   />
                 ) : (
-                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-zinc-800 text-3xl font-bold" style={{ color: accentTextColor }}>
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-3xl font-bold shadow-[0_16px_30px_rgba(0,0,0,0.35)]" style={{ color: accentTextColor }}>
                     {profile.display_name?.[0]?.toUpperCase() ||
                       profile.username?.[0]?.toUpperCase() ||
                       "U"}
@@ -2858,7 +2863,10 @@ export default function ProfilePage() {
                 )}
               </div>
 
-              <div>
+              <div className="min-w-0 flex-1">
+                <div className="mb-3 inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-400">
+                  SoundBored Profile
+                </div>
                 {isEditingDisplayName ? (
                   <div className="flex items-center gap-2">
                     <input
@@ -2885,7 +2893,7 @@ export default function ProfilePage() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <h1 className="text-3xl font-bold">
+                    <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
                       {profile.display_name || profile.username}
                     </h1>
                     {/* Shield badge — visible to everyone when this user is an admin */}
@@ -2912,16 +2920,16 @@ export default function ProfilePage() {
                     )}
                   </div>
                 )}
-                <p className="text-zinc-400">@{profile.username}</p>
+                <p className="mt-1 text-zinc-400">@{profile.username}</p>
 
-                <div className="mt-3 flex gap-4 text-sm text-zinc-400">
-                  <span>
+                <div className="mt-4 flex flex-wrap gap-3 text-sm text-zinc-300">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                     <span className="font-semibold text-white">
                       {followerCount}
                     </span>{" "}
                     followers
                   </span>
-                  <span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                     <span className="font-semibold text-white">
                       {followingCount}
                     </span>{" "}
@@ -2934,7 +2942,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <div className="mt-6 border-t pt-6" style={{ borderTopColor: profileCardPatternColor }}>
+          <div className="relative z-10 mt-6 border-t pt-6" style={{ borderTopColor: profileCardPatternColor }}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">Bio</h2>
 
@@ -2953,7 +2961,7 @@ export default function ProfilePage() {
             </div>
 
             {!isEditingBio ? (
-              <p className="text-zinc-300">
+              <p className="max-w-3xl text-[15px] leading-7 text-zinc-300">
                 {profile.bio?.trim()
                   ? profile.bio
                   : isOwnProfile

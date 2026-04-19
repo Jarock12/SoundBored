@@ -46,7 +46,7 @@ export default function RootLayout({
         {/* Animated floating music notes rendered on a fixed canvas (z-index 1) */}
         <MusicNotes />
         {/* Page content sits above the canvas (z-index 2) so it stays interactive */}
-        <div className="relative z-[2] flex flex-col flex-1">
+        <div className="app-shell relative z-[2] flex flex-col flex-1">
           {children}
         </div>
       </body>
