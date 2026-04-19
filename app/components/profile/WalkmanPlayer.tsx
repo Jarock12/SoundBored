@@ -4,6 +4,7 @@
 // Brand names are fictional (Suny / Strollman) to avoid trademark issues.
 "use client";
 
+import Image from "next/image";
 import { useState, useRef, useEffect, useCallback } from "react";
 
 type WalkmanTrack = {
@@ -18,6 +19,7 @@ type WalkmanColors = {
   body: string;          // Main body gradient start
   bodyEnd: string;       // Main body gradient end
   rightPanel: string;    // Right side panel color
+  rightPanelSheen: string; // Right panel gradient end + shadow sheen color
   logo: string;          // SUNY + STROLLMAN text color
   topButton: string;     // Orange top button color
   cassette: string;      // Cassette reel outer color
@@ -30,6 +32,7 @@ const DEFAULT_COLORS: WalkmanColors = {
   body: "#497496",
   bodyEnd: "#44607B",
   rightPanel: "#BED2DD",
+  rightPanelSheen: "#A8B3BE",
   logo: "#CDDBE2",
   topButton: "#E2B380",
   cassette: "#73695C",
@@ -362,6 +365,7 @@ export default function WalkmanPlayer({
               ["body", "Body Top"],
               ["bodyEnd", "Body Bottom"],
               ["rightPanel", "Side Panel"],
+              ["rightPanelSheen", "Panel Sheen"],
               ["logo", "Logo Color"],
               ["topButton", "Top Button"],
               ["cassette", "Cassette"],
@@ -414,9 +418,11 @@ export default function WalkmanPlayer({
                   className="flex w-full items-center gap-3 rounded-lg bg-zinc-800/60 p-2 text-left hover:bg-zinc-800"
                 >
                   {t.image_url && (
-                    <img
+                    <Image
                       src={t.image_url}
                       alt={t.track_name}
+                      width={40}
+                      height={40}
                       className="h-10 w-10 rounded object-cover"
                     />
                   )}
@@ -461,9 +467,9 @@ export default function WalkmanPlayer({
               borderRadius: 3,
               background: isSpinning
                 ? `linear-gradient(90deg, #9D7449, #B08A5C)`
-                : `linear-gradient(90deg, ${colors.sideButton}, #96ABB5)`,
+                : `linear-gradient(90deg, ${colors.sideButton}, ${colors.rightPanelSheen})`,
               boxShadow:
-                "-1px -1px 0px 1px #CAD5DA inset, 0 3px 1px #CAD5DA inset, 0 30px 20px -5px rgba(0,0,0,0.1)",
+                `-1px -1px 0px 1px ${colors.rightPanelSheen} inset, 0 3px 1px ${colors.rightPanelSheen} inset, 0 30px 20px -5px rgba(0,0,0,0.1)`,
               cursor: "pointer",
               border: "none",
               zIndex: 1,
@@ -480,9 +486,9 @@ export default function WalkmanPlayer({
               height: 418,
               borderRadius: "0 5px 5px 0",
               opacity: 0.75,
-              background: `linear-gradient(${colors.rightPanel}, #A8B3BE)`,
+              background: `linear-gradient(${colors.rightPanel}, ${colors.rightPanelSheen})`,
               boxShadow:
-                "-2.5px -3px 4px 2px #A4BAD8 inset, 0 3px 1px #D9DCF1 inset",
+                `-2.5px -3px 4px 2px ${colors.rightPanelSheen} inset, 0 3px 1px ${colors.rightPanelSheen} inset`,
               pointerEvents: "none",
             }}
           />

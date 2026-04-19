@@ -14,11 +14,12 @@
  *  - Admins cannot ban or delete themselves from this panel
  */
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
+import { useAuth } from "../context/AuthProvider";
 import MusicNotesLoader from "../components/MusicNotesLoader";
 
 // Shape of a user row as returned from the profiles table
@@ -33,6 +34,7 @@ type AdminUserRow = {
 
 export default function AdminPage() {
   const router = useRouter();
+  const { user, authLoading } = useAuth();
 
   // Current authenticated admin
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -52,39 +54,30 @@ export default function AdminPage() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+
     async function init() {
-      // Get the currently logged-in user
-      const user = await getCurrentUserSafe();
-
-      if (!user) {
-        // Not logged in — send to login page
-        router.push("/login");
-        return;
-      }
-
-      // Fetch the current user's profile to check admin status
       const { data: myProfile } = await supabase
         .from("profiles")
         .select("username, is_admin")
-        .eq("id", user.id)
+        .eq("id", user!.id)
         .single();
 
-      // If the user is not an admin, redirect them away
       if (!myProfile?.is_admin) {
         router.push("/feed");
         return;
       }
 
-      setCurrentUserId(user.id);
+      setCurrentUserId(user!.id);
       setMyUsername(myProfile.username);
 
-      // Load all users for the admin panel
       await fetchUsers();
       setLoading(false);
     }
 
     init();
-  }, [router]);
+  }, [user, authLoading, router]);
 
   /**
    * Fetches all users from the profiles table.
@@ -231,8 +224,8 @@ export default function AdminPage() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="text-4xl font-bold flex items-center gap-3">
-                {/* Shield icon to indicate this is the admin area */}
-                <span className="text-blue-400">🛡️</span> Admin Panel
+                {/* Treble clef to indicate this is the admin area */}
+                <span style={{ color: "#f59e0b", fontSize: "2.5rem", lineHeight: 1 }}>𝄞</span> Admin Panel
               </h1>
               <p className="mt-2 text-zinc-400">
                 Manage users — ban, unban, or permanently delete accounts.
@@ -247,7 +240,7 @@ export default function AdminPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter by username or display name"
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-white outline-none focus:ring-2 focus:ring-yellow-500"
             />
           </div>
 
@@ -273,7 +266,7 @@ export default function AdminPage() {
                   user.is_banned
                     ? "border-red-800"
                     : user.is_admin
-                    ? "border-blue-800"
+                    ? "border-yellow-700"
                     : "border-transparent"
                 }`}
               >
@@ -281,9 +274,11 @@ export default function AdminPage() {
                   {/* User info */}
                   <div className="flex items-center gap-4">
                     {user.avatar_url ? (
-                      <img
+                      <Image
                         src={user.avatar_url}
                         alt={user.username}
+                        width={48}
+                        height={48}
                         className="h-12 w-12 rounded-full object-cover"
                       />
                     ) : (
@@ -307,10 +302,10 @@ export default function AdminPage() {
                         {user.is_admin && (
                           <span
                             title="Admin"
-                            className="text-blue-400 text-sm"
+                            style={{ color: "#f59e0b", fontSize: "1rem", lineHeight: 1 }}
                             aria-label="Admin"
                           >
-                            🛡️
+                            𝄞
                           </span>
                         )}
 

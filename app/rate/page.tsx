@@ -16,10 +16,11 @@
  * Protected: redirects to /login if not authenticated.
  */
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
+import { useAuth } from "../context/AuthProvider";
 import NoteRating from "../components/NoteRating";
 import MusicReviewCard from "../components/MusicReviewCard";
 
@@ -41,6 +42,7 @@ function formatNotesText(rating: number) {
 
 export default function RateSongPage() {
   const router = useRouter();
+  const { user, authLoading } = useAuth();
 
   const [myUsername, setMyUsername] = useState<string | null>(null);
 
@@ -52,32 +54,18 @@ export default function RateSongPage() {
   );
 
   const [rating, setRating] = useState("4");
+  const [hoverRating, setHoverRating] = useState<number | null>(null);
   const [review, setReview] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    async function loadCurrentProfile() {
-      const user = await getCurrentUserSafe();
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
 
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const { data: profileData } = await supabase
-        .from("profiles")
-        .select("username")
-        .eq("id", user.id)
-        .single();
-
-      if (profileData?.username) {
-        setMyUsername(profileData.username);
-      }
-    }
-
-    loadCurrentProfile();
-  }, [router]);
+    supabase.from("profiles").select("username").eq("id", user.id).single()
+      .then(({ data }) => { if (data?.username) setMyUsername(data.username); });
+  }, [user, authLoading, router]);
 
   async function handleTrackSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -117,8 +105,6 @@ export default function RateSongPage() {
   async function handleSaveRating(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMessage("");
-
-    const user = await getCurrentUserSafe();
 
     if (!user) {
       setMessage("You must be logged in to rate songs.");
@@ -215,9 +201,11 @@ export default function RateSongPage() {
                   }`}
                 >
                   {track.image_url ? (
-                    <img
+                    <Image
                       src={track.image_url}
                       alt={track.track_name}
+                      width={64}
+                      height={64}
                       className="h-16 w-16 rounded-lg object-cover"
                     />
                   ) : (
@@ -250,9 +238,11 @@ export default function RateSongPage() {
             {selectedTrack ? (
               <div className="flex items-center gap-4 rounded-xl bg-zinc-800/70 p-4">
                 {selectedTrack.image_url ? (
-                  <img
+                  <Image
                     src={selectedTrack.image_url}
                     alt={selectedTrack.track_name}
+                    width={80}
+                    height={80}
                     className="h-20 w-20 rounded-lg object-cover"
                   />
                 ) : (
@@ -283,21 +273,33 @@ export default function RateSongPage() {
               <label className="mb-4 block text-sm font-medium text-zinc-300">
                 Rating
               </label>
-              <div className="flex justify-center gap-4">
-                {[1, 2, 3, 4, 5].map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setRating(String(value))}
-                    className={`text-6xl transition ${
-                      Number(rating) >= value
-                        ? "text-green-500"
-                        : "text-zinc-600 hover:text-zinc-500"
-                    }`}
-                  >
-                    ♪
-                  </button>
-                ))}
+              <div
+                className="flex justify-center gap-4"
+                onMouseLeave={() => setHoverRating(null)}
+              >
+                {[1, 2, 3, 4, 5].map((value) => {
+                  const active = hoverRating ?? Number(rating);
+                  const isFull = active >= value;
+                  const isHalf = !isFull && active === value - 0.5;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onMouseMove={(e) => {
+                        const half = e.nativeEvent.offsetX < e.currentTarget.offsetWidth / 2;
+                        setHoverRating(half ? value - 0.5 : value);
+                      }}
+                      onClick={(e) => {
+                        const half = e.nativeEvent.offsetX < e.currentTarget.offsetWidth / 2;
+                        setRating(String(half ? value - 0.5 : value));
+                      }}
+                      className="text-6xl transition select-none"
+                      style={{ color: isFull || isHalf ? "#4ade80" : "#52525b" }}
+                    >
+                      {isHalf ? "½" : "♪"}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

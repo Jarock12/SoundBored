@@ -9,12 +9,15 @@
  *
  * Behaviour summary:
  *  - View mode: pointer-events: none → clicks pass through to the grid
- *  - Edit mode: stickers are draggable; a controls bar appears when one is selected;
+ *  - Edit mode: stickers are draggable, resizable via corner handles, and
+ *    rotatable via a rotation handle above the sticker; a floating toolbar
+ *    appears below the selected sticker for color/opacity/delete controls;
  *    a toolbar panel appears when `showToolbar` is true
- *  - Drag uses global window events attached once on mount (via a ref pattern)
- *    so the cursor can roam outside the container without losing the drag
+ *  - All drag interactions use global window events via a ref pattern so the
+ *    cursor can roam outside the container without losing the drag
  */
 
+import Image from "next/image";
 import { useRef, useEffect, useState, useCallback } from "react";
 
 // ─── Public types ──────────────────────────────────────────────────────────────
@@ -225,6 +228,34 @@ export const BUILTIN_STICKER_DEFS: BuiltinStickerDef[] = [
   },
 ];
 
+// ─── Drag state discriminated union ────────────────────────────────────────────
+
+type DragState =
+  | {
+      mode: "move";
+      stickerId: string;
+      startMouseX: number;
+      startMouseY: number;
+      startStickerX: number;
+      startStickerY: number;
+    }
+  | {
+      mode: "resize";
+      stickerId: string;
+      startSize: number;
+      startDist: number;
+      centerScreenX: number;
+      centerScreenY: number;
+    }
+  | {
+      mode: "rotate";
+      stickerId: string;
+      startRotation: number;
+      startAngle: number;
+      centerScreenX: number;
+      centerScreenY: number;
+    };
+
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 type StickerLayerProps = {
@@ -261,13 +292,7 @@ export default function StickerLayer({
   const [uploading, setUploading] = useState(false);
 
   // Active drag state — stored in a ref so mousemove never captures stale values
-  const dragState = useRef<{
-    stickerId: string;
-    startMouseX: number;
-    startMouseY: number;
-    startStickerX: number;
-    startStickerY: number;
-  } | null>(null);
+  const dragState = useRef<DragState | null>(null);
 
   // ── Global drag events — attached once, use refs for live data ─────────────
 
@@ -276,20 +301,40 @@ export default function StickerLayer({
       const ds = dragState.current;
       if (!ds) return;
 
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const dx = e.clientX - ds.startMouseX;
-      const dy = e.clientY - ds.startMouseY;
-
-      const newX = Math.max(0, Math.min(100, ds.startStickerX + (dx / rect.width) * 100));
-      const newY = Math.max(0, Math.min(100, ds.startStickerY + (dy / rect.height) * 100));
-
-      const updated = stickersRef.current.map((s) =>
-        s.id === ds.stickerId ? { ...s, x: newX, y: newY } : s
-      );
-      onChangeRef.current(updated);
+      if (ds.mode === "move") {
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        const dx = e.clientX - ds.startMouseX;
+        const dy = e.clientY - ds.startMouseY;
+        const newX = Math.max(0, Math.min(100, ds.startStickerX + (dx / rect.width) * 100));
+        const newY = Math.max(0, Math.min(100, ds.startStickerY + (dy / rect.height) * 100));
+        const updated = stickersRef.current.map((s) =>
+          s.id === ds.stickerId ? { ...s, x: newX, y: newY } : s
+        );
+        onChangeRef.current(updated);
+      } else if (ds.mode === "resize") {
+        const dx = e.clientX - ds.centerScreenX;
+        const dy = e.clientY - ds.centerScreenY;
+        const newDist = Math.sqrt(dx * dx + dy * dy);
+        if (ds.startDist === 0) return;
+        const scale = newDist / ds.startDist;
+        const newSize = Math.max(0.2, Math.min(6, ds.startSize * scale));
+        const updated = stickersRef.current.map((s) =>
+          s.id === ds.stickerId ? { ...s, size: newSize } : s
+        );
+        onChangeRef.current(updated);
+      } else if (ds.mode === "rotate") {
+        const dx = e.clientX - ds.centerScreenX;
+        const dy = e.clientY - ds.centerScreenY;
+        const newAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+        const delta = newAngle - ds.startAngle;
+        const newRotation = ds.startRotation + delta;
+        const updated = stickersRef.current.map((s) =>
+          s.id === ds.stickerId ? { ...s, rotation: newRotation } : s
+        );
+        onChangeRef.current(updated);
+      }
     }
 
     function handleMouseUp() {
@@ -304,7 +349,7 @@ export default function StickerLayer({
     };
   }, []); // intentionally empty — live values come from refs
 
-  // ── Sticker interaction ────────────────────────────────────────────────────
+  // ── Sticker move interaction ───────────────────────────────────────────────
 
   const handleStickerMouseDown = useCallback(
     (e: React.MouseEvent, stickerId: string) => {
@@ -318,11 +363,74 @@ export default function StickerLayer({
       setSelectedId(stickerId);
 
       dragState.current = {
+        mode: "move",
         stickerId,
         startMouseX: e.clientX,
         startMouseY: e.clientY,
         startStickerX: sticker.x,
         startStickerY: sticker.y,
+      };
+    },
+    [isEditMode]
+  );
+
+  // ── Corner resize interaction ──────────────────────────────────────────────
+
+  const handleResizeMouseDown = useCallback(
+    (e: React.MouseEvent, stickerId: string) => {
+      if (!isEditMode) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const sticker = stickersRef.current.find((s) => s.id === stickerId);
+      const container = containerRef.current;
+      if (!sticker || !container) return;
+
+      const rect = container.getBoundingClientRect();
+      const centerScreenX = rect.left + (sticker.x / 100) * rect.width;
+      const centerScreenY = rect.top + (sticker.y / 100) * rect.height;
+      const dx = e.clientX - centerScreenX;
+      const dy = e.clientY - centerScreenY;
+      const startDist = Math.sqrt(dx * dx + dy * dy);
+
+      dragState.current = {
+        mode: "resize",
+        stickerId,
+        startSize: sticker.size,
+        startDist,
+        centerScreenX,
+        centerScreenY,
+      };
+    },
+    [isEditMode]
+  );
+
+  // ── Rotation handle interaction ────────────────────────────────────────────
+
+  const handleRotateMouseDown = useCallback(
+    (e: React.MouseEvent, stickerId: string) => {
+      if (!isEditMode) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const sticker = stickersRef.current.find((s) => s.id === stickerId);
+      const container = containerRef.current;
+      if (!sticker || !container) return;
+
+      const rect = container.getBoundingClientRect();
+      const centerScreenX = rect.left + (sticker.x / 100) * rect.width;
+      const centerScreenY = rect.top + (sticker.y / 100) * rect.height;
+      const dx = e.clientX - centerScreenX;
+      const dy = e.clientY - centerScreenY;
+      const startAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+
+      dragState.current = {
+        mode: "rotate",
+        stickerId,
+        startRotation: sticker.rotation,
+        startAngle,
+        centerScreenX,
+        centerScreenY,
       };
     },
     [isEditMode]
@@ -404,16 +512,14 @@ export default function StickerLayer({
   function renderStickerContent(sticker: PlacedSticker) {
     if (sticker.type === "custom" && sticker.imageUrl) {
       return (
-        <img
+        <Image
           src={sticker.imageUrl}
           alt="sticker"
           draggable={false}
-          style={{
-            width: BASE_SIZE * sticker.size,
-            height: BASE_SIZE * sticker.size,
-            objectFit: "contain",
-            display: "block",
-          }}
+          unoptimized
+          width={Math.round(BASE_SIZE * sticker.size)}
+          height={Math.round(BASE_SIZE * sticker.size)}
+          style={{ objectFit: "contain", display: "block" }}
         />
       );
     }
@@ -430,6 +536,14 @@ export default function StickerLayer({
 
   const showColorPicker = selectedSticker?.type === "custom" || selectedDef?.colorable === true;
 
+  // Corner handle positions: [top, left, bottom, right, cursor]
+  const CORNER_HANDLES = [
+    { top: -10, left: -10, cursor: "nw-resize" },
+    { top: -10, right: -10, cursor: "ne-resize" },
+    { bottom: -10, left: -10, cursor: "sw-resize" },
+    { bottom: -10, right: -10, cursor: "se-resize" },
+  ] as const;
+
   // ── JSX ────────────────────────────────────────────────────────────────────
 
   return (
@@ -437,124 +551,202 @@ export default function StickerLayer({
       ref={containerRef}
       className="absolute inset-0 z-20"
       // Container is always pointer-events:none so clicks pass through to grid sections.
-      // Only individual stickers, the controls bar, and the toolbar re-enable pointer events.
+      // Only individual stickers, handles, and the toolbar re-enable pointer events.
       style={{ pointerEvents: "none" }}
     >
       {/* ── Placed stickers ── */}
       {stickers.map((sticker) => {
         const isSelected = isEditMode && sticker.id === selectedId;
+
         return (
           <div
             key={sticker.id}
-            onMouseDown={(e) => handleStickerMouseDown(e, sticker.id)}
+            // Outer wrapper: position only — no rotation so the toolbar stays readable
+            style={{
+              position: "absolute",
+              left: `${sticker.x}%`,
+              top: `${sticker.y}%`,
+              transform: "translate(-50%, -50%)",
+              pointerEvents: isEditMode ? "auto" : "none",
+              userSelect: "none",
+            }}
             onClick={(e) => {
               if (!isEditMode) return;
               e.stopPropagation();
               setSelectedId(sticker.id);
             }}
-            style={{
-              position: "absolute",
-              left: `${sticker.x}%`,
-              top: `${sticker.y}%`,
-              transform: `translate(-50%, -50%) rotate(${sticker.rotation}deg)`,
-              opacity: sticker.opacity,
-              pointerEvents: isEditMode ? "auto" : "none",
-              cursor: isEditMode ? (dragState.current?.stickerId === sticker.id ? "grabbing" : "grab") : "default",
-              userSelect: "none",
-              outline: isSelected ? "2px dashed rgba(255,255,255,0.6)" : "none",
-              outlineOffset: 6,
-              borderRadius: 4,
-            }}
           >
-            {renderStickerContent(sticker)}
+            {/* Rotation wrapper — rotates content + handles + knob together, like Google Slides */}
+            <div style={{ transform: `rotate(${sticker.rotation}deg)`, display: "inline-block" }}>
+              {/* Rotation handle — sits above the sticker in rotated space */}
+              {isSelected && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: -36,
+                    transform: "translateX(-50%)",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    pointerEvents: "auto",
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div
+                    onMouseDown={(e) => handleRotateMouseDown(e, sticker.id)}
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      border: "2px solid rgba(255,255,255,0.85)",
+                      backgroundColor: "rgba(0,0,0,0.55)",
+                      cursor: "crosshair",
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
+                    }}
+                  />
+                  <div style={{ width: 1, height: 18, backgroundColor: "rgba(255,255,255,0.45)" }} />
+                </div>
+              )}
+
+              {/* Sticker content — drag-to-move target, outline follows rotation */}
+              <div
+                onMouseDown={(e) => handleStickerMouseDown(e, sticker.id)}
+                style={{
+                  opacity: sticker.opacity,
+                  cursor: isEditMode
+                    ? dragState.current?.stickerId === sticker.id && dragState.current.mode === "move"
+                      ? "grabbing"
+                      : "grab"
+                    : "default",
+                  outline: isSelected ? "2px dashed rgba(255,255,255,0.55)" : "none",
+                  outlineOffset: 6,
+                  borderRadius: 4,
+                }}
+              >
+                {renderStickerContent(sticker)}
+              </div>
+
+              {/* Corner resize handles — inside rotation wrapper so they follow the sticker */}
+              {isSelected &&
+                CORNER_HANDLES.map((pos, i) => (
+                  <div
+                    key={i}
+                    onMouseDown={(e) => handleResizeMouseDown(e, sticker.id)}
+                    style={{
+                      position: "absolute",
+                      width: 20,
+                      height: 20,
+                      ...pos,
+                      cursor: pos.cursor,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 2,
+                        backgroundColor: "white",
+                        border: "1px solid rgba(0,0,0,0.35)",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                      }}
+                    />
+                  </div>
+                ))}
+            </div>{/* end rotation wrapper */}
+
+            {/* Floating toolbar — appears below the selected sticker */}
+            {isSelected && selectedSticker && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  marginTop: 16,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "5px 10px",
+                  backgroundColor: "rgba(9,9,11,0.96)",
+                  border: "1px solid rgba(113,113,122,0.5)",
+                  borderRadius: 10,
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.45)",
+                  backdropFilter: "blur(8px)",
+                  whiteSpace: "nowrap",
+                  zIndex: 30,
+                  pointerEvents: "auto",
+                }}
+              >
+                {/* Color picker — only for colorable stickers */}
+                {showColorPicker && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 10, color: "#a1a1aa" }}>Color</span>
+                    <input
+                      type="color"
+                      value={selectedSticker.color}
+                      onChange={(e) => updateSelected({ color: e.target.value })}
+                      style={{
+                        width: 24,
+                        height: 24,
+                        cursor: "pointer",
+                        borderRadius: 4,
+                        border: "1px solid #52525b",
+                        backgroundColor: "transparent",
+                        padding: 0,
+                      }}
+                      title="Sticker color"
+                    />
+                  </div>
+                )}
+
+                {/* Opacity slider */}
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ fontSize: 10, color: "#a1a1aa" }}>Opacity</span>
+                  <input
+                    type="range"
+                    min={10}
+                    max={100}
+                    step={1}
+                    value={Math.round(selectedSticker.opacity * 100)}
+                    onChange={(e) => updateSelected({ opacity: Number(e.target.value) / 100 })}
+                    style={{ width: 64 }}
+                    title="Opacity"
+                  />
+                  <span style={{ fontSize: 10, color: "#71717a", width: 28, textAlign: "right" }}>
+                    {Math.round(selectedSticker.opacity * 100)}%
+                  </span>
+                </div>
+
+                {/* Delete */}
+                <button
+                  onClick={deleteSelected}
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 12,
+                    color: "#fca5a5",
+                    border: "1px solid #7f1d1d",
+                    borderRadius: 6,
+                    backgroundColor: "transparent",
+                    cursor: "pointer",
+                  }}
+                  title="Delete sticker"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           </div>
         );
       })}
 
-      {/* ── Selected sticker controls bar (top-right) ── */}
-      {isEditMode && selectedSticker && (
-        <div
-          className="absolute right-2 top-2 z-30 flex flex-wrap items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/95 px-3 py-2 shadow-xl backdrop-blur"
-          style={{ pointerEvents: "auto", maxWidth: "calc(100% - 16px)" }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <span className="text-[10px] font-semibold text-zinc-400">Sticker</span>
-
-          {/* Color */}
-          {showColorPicker && (
-            <div className="flex items-center gap-1">
-              <label className="text-[10px] text-zinc-400">Color</label>
-              <input
-                type="color"
-                value={selectedSticker.color}
-                onChange={(e) => updateSelected({ color: e.target.value })}
-                className="h-6 w-6 cursor-pointer rounded border border-zinc-600 bg-transparent"
-                title="Sticker color"
-              />
-            </div>
-          )}
-
-          {/* Size */}
-          <div className="flex items-center gap-1">
-            <label className="text-[10px] text-zinc-400">Size</label>
-            <input
-              type="range"
-              min={20}
-              max={400}
-              step={5}
-              value={Math.round(selectedSticker.size * 100)}
-              onChange={(e) => updateSelected({ size: Number(e.target.value) / 100 })}
-              className="w-20"
-              title="Size"
-            />
-            <span className="w-8 text-right text-[10px] text-zinc-400">{Math.round(selectedSticker.size * 100)}%</span>
-          </div>
-
-          {/* Rotation */}
-          <div className="flex items-center gap-1">
-            <label className="text-[10px] text-zinc-400">Rotate</label>
-            <input
-              type="range"
-              min={-180}
-              max={180}
-              step={1}
-              value={selectedSticker.rotation}
-              onChange={(e) => updateSelected({ rotation: Number(e.target.value) })}
-              className="w-20"
-              title="Rotation"
-            />
-            <span className="w-8 text-right text-[10px] text-zinc-400">{selectedSticker.rotation}°</span>
-          </div>
-
-          {/* Opacity */}
-          <div className="flex items-center gap-1">
-            <label className="text-[10px] text-zinc-400">Opacity</label>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              step={1}
-              value={Math.round(selectedSticker.opacity * 100)}
-              onChange={(e) => updateSelected({ opacity: Number(e.target.value) / 100 })}
-              className="w-16"
-              title="Opacity"
-            />
-            <span className="w-7 text-right text-[10px] text-zinc-400">{Math.round(selectedSticker.opacity * 100)}%</span>
-          </div>
-
-          {/* Delete */}
-          <button
-            onClick={deleteSelected}
-            className="rounded border border-red-700 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950/40"
-            title="Delete sticker"
-          >
-            ✕ Delete
-          </button>
-        </div>
-      )}
-
-      {/* ── Sticker picker toolbar (top-left) ── */}
+      {/* ── Sticker picker toolbar (left side) ── */}
       {isEditMode && showToolbar && (
         <div
           className="absolute left-2 top-2 z-30 w-72 rounded-xl border border-purple-700/60 bg-zinc-950/95 p-3 shadow-xl backdrop-blur"

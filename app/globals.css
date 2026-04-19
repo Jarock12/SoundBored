@@ -85,18 +85,15 @@ body {
 }
 .react-grid-item > .react-resizable-handle {
   position: absolute;
-  width: 20px;
-  height: 20px;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  cursor: se-resize;
+  opacity: 0;
 }
 .react-grid-item > .react-resizable-handle::after {
-  content: "";
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid rgba(34, 197, 94, 0.6);
-  border-bottom: 2px solid rgba(34, 197, 94, 0.6);
+  display: none;
 }
 .react-grid-placeholder {
   background: rgba(34, 197, 94, 0.2) !important;

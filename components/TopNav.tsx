@@ -121,9 +121,9 @@ export default function TopNav({
       {showAdmin && isAdmin && (
         <Link
           href="/admin"
-          className="rounded-lg border border-blue-700 bg-blue-950/25 px-4 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-900/30"
+          className="rounded-lg border border-yellow-700 bg-yellow-950/25 px-4 py-2 text-sm font-semibold text-yellow-300 transition hover:bg-yellow-900/30"
         >
-          Admin Panel
+          <span style={{ color: "#f59e0b" }}>𝄞</span> Admin Panel
         </Link>
       )}
 

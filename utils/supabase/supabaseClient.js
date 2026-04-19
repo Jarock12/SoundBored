@@ -18,4 +18,16 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error("Supabase environment variables are missing.");
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// No-op lock: disables Web Locks API inside Supabase auth.
+// The default implementation uses navigator.locks which causes
+// "Lock broken by another request with the 'steal' option" AbortErrors
+// in React 18 StrictMode (effects mount/unmount/remount simultaneously).
+// Our own getCurrentUserSafe() already serialises auth calls, so the
+// Supabase-level lock is redundant and only causes contention here.
+const noopLock = (_name, _acquireTimeout, fn) => fn();
+
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    lock: noopLock,
+  },
+});

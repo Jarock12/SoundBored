@@ -12,6 +12,7 @@
  *
  * Track search proxies through /api/spotify/search so credentials stay server-side.
  */
+import Image from "next/image";
 import { useEffect, useState } from "react";
 
 type PlaylistTrack = {
@@ -169,9 +170,11 @@ export default function CustomPlaylistSection({
                   style={innerBackgroundColor ? { backgroundColor: innerBackgroundColor } : undefined}
                 >
                   {t.image_url && (
-                    <img
+                    <Image
                       src={t.image_url}
                       alt={t.track_name}
+                      width={40}
+                      height={40}
                       className="h-10 w-10 rounded object-cover"
                     />
                   )}
@@ -208,9 +211,11 @@ export default function CustomPlaylistSection({
               style={innerBackgroundColor ? { backgroundColor: innerBackgroundColor } : undefined}
             >
               {track.image_url ? (
-                <img
+                <Image
                   src={track.image_url}
                   alt={track.track_name}
+                  width={48}
+                  height={48}
                   className="h-12 w-12 rounded object-cover"
                 />
               ) : (

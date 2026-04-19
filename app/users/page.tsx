@@ -16,10 +16,11 @@
  */
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../utils/supabase/supabaseClient";
-import { getCurrentUserSafe } from "../../utils/supabase/auth";
+import { useAuth } from "../context/AuthProvider";
 import MusicNotesLoader from "../components/MusicNotesLoader";
 
 type Profile = {
@@ -37,6 +38,7 @@ type SearchResult = Profile & {
 
 export default function UsersPage() {
   const router = useRouter();
+  const { user, authLoading } = useAuth();
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [myUsername, setMyUsername] = useState<string | null>(null);
@@ -48,34 +50,29 @@ export default function UsersPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+
     async function loadInitial() {
       setLoading(true);
-
-      const user = await getCurrentUserSafe();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      setCurrentUserId(user.id);
+      setCurrentUserId(user!.id);
 
       const { data: myProfileData } = await supabase
         .from("profiles")
         .select("username")
-        .eq("id", user.id)
+        .eq("id", user!.id)
         .single();
 
       if (myProfileData?.username) {
         setMyUsername(myProfileData.username);
       }
 
-      await runSearch("", user.id);
+      await runSearch("", user!.id);
       setLoading(false);
     }
 
     loadInitial();
-  }, [router]);
+  }, [user, authLoading, router]);
 
   async function runSearch(rawQuery: string, userIdOverride?: string) {
     const userId = userIdOverride || currentUserId;
@@ -293,9 +290,11 @@ export default function UsersPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-4">
                       {profile.avatar_url ? (
-                        <img
+                        <Image
                           src={profile.avatar_url}
                           alt={profile.username}
+                          width={56}
+                          height={56}
                           className="h-14 w-14 rounded-full object-cover"
                         />
                       ) : (
