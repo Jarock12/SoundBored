@@ -19,6 +19,7 @@
 
 import Image from "next/image";
 import { useRef, useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 // ─── Public types ──────────────────────────────────────────────────────────────
 
@@ -290,6 +291,11 @@ export default function StickerLayer({
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   // Active drag state — stored in a ref so mousemove never captures stale values
   const dragState = useRef<DragState | null>(null);
@@ -746,10 +752,10 @@ export default function StickerLayer({
         );
       })}
 
-      {/* ── Sticker picker toolbar (left side) ── */}
-      {isEditMode && showToolbar && (
+      {/* ── Sticker picker toolbar (viewport-fixed via portal) ── */}
+      {isMounted && isEditMode && showToolbar && createPortal(
         <div
-          className="absolute left-2 top-2 z-30 w-72 rounded-xl border border-purple-700/60 bg-zinc-950/95 p-3 shadow-xl backdrop-blur"
+          className="fixed bottom-4 right-4 z-[9998] w-72 rounded-xl border border-purple-700/60 bg-zinc-950/95 p-3 shadow-xl backdrop-blur sm:bottom-6 sm:right-6"
           style={{ pointerEvents: "auto", maxHeight: "60vh", overflowY: "auto" }}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
@@ -816,7 +822,8 @@ export default function StickerLayer({
               <p className="mt-1.5 text-[9px] text-zinc-600">PNG or WebP · max 2 MB</p>
             </>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
