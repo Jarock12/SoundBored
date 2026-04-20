@@ -39,13 +39,10 @@ export default function MusicReviewCard({
             <p className="text-[10px] font-semibold uppercase tracking-[0.24em]" style={{ color: accentColor }}>
               Review
             </p>
-            <p className="mt-1 text-xs" style={{ color: accentColor }}>
-              Music-note diary entry
-            </p>
           </div>
 
           <div
-            className={`rounded-full border border-white/10 bg-black/30 ${
+            className={`flex flex-col items-center rounded-full border border-white/10 bg-black/30 ${
               compact ? "px-3 py-1.5" : "px-4 py-2"
             }`}
           >
@@ -54,6 +51,9 @@ export default function MusicReviewCard({
               style={{ color: accentColor }}
             >
               <NoteRating rating={rating} />
+            </p>
+            <p className="text-xs font-medium" style={{ color: accentColor }}>
+              {rating}/5
             </p>
           </div>
         </div>

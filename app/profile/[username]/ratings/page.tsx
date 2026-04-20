@@ -25,7 +25,6 @@ import { useParams } from "next/navigation";
 import { supabase } from "../../../../utils/supabase/supabaseClient";
 import { useAuth } from "../../../context/AuthProvider";
 import MusicNotesLoader from "../../../components/MusicNotesLoader";
-import NoteRating from "../../../components/NoteRating";
 import MusicReviewCard from "../../../components/MusicReviewCard";
 
 const DEFAULT_ACCENT_TEXT_COLOR = "#22c55e";
@@ -359,32 +358,23 @@ export default function ProfileRatingsPage() {
                                 </span>
                               ) : null}
                             </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              Reviewed {formatDate(rating.updated_at)}
+                            </p>
                           </div>
 
-                          <div className="text-left md:text-right">
-                            <p className="text-xl font-semibold" style={{ color: accentTextColor }}>
-                              <NoteRating rating={rating.rating} />
-                            </p>
-                            <p className="mt-1 text-sm" style={{ color: accentTextColor }}>
-                              {rating.rating}/5 · Reviewed{" "}
-                              {formatDate(rating.updated_at)}
-                            </p>
-                          </div>
+                          {rating.spotify_track_id && (
+                            <a
+                              href={`https://open.spotify.com/track/${rating.spotify_track_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 text-sm hover:underline"
+                              style={{ color: accentTextColor }}
+                            >
+                              Listen on Spotify
+                            </a>
+                          )}
                         </div>
-
-                        {rating.review?.trim() ? (
-                          <div className="mt-4 max-w-4xl">
-                            <p className="text-lg leading-8" style={{ color: accentTextColor }}>
-                              &ldquo;{rating.review}&rdquo;
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="mt-4">
-                            <p className="italic" style={{ color: accentTextColor }}>
-                              No written review for this rating.
-                            </p>
-                          </div>
-                        )}
 
                         <div className="max-w-4xl">
                           <MusicReviewCard
@@ -452,29 +442,6 @@ export default function ProfileRatingsPage() {
                             >
                               {ratingBusy === `delete-${rating.id}` ? "Deleting..." : "✕ Delete"}
                             </button>
-                            {rating.spotify_track_id && (
-                              <a
-                                href={`https://open.spotify.com/track/${rating.spotify_track_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="ml-auto text-sm hover:underline"
-                                style={{ color: accentTextColor }}
-                              >
-                                Listen on Spotify
-                              </a>
-                            )}
-                          </div>
-                        ) : rating.spotify_track_id ? (
-                          <div className="mt-4 flex justify-end">
-                            <a
-                              href={`https://open.spotify.com/track/${rating.spotify_track_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-sm hover:underline"
-                              style={{ color: accentTextColor }}
-                            >
-                              Listen on Spotify
-                            </a>
                           </div>
                         ) : null}
                       </div>

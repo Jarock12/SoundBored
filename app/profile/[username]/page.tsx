@@ -41,7 +41,6 @@ import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import { supabase } from "../../../utils/supabase/supabaseClient";
 import { useAuth } from "../../context/AuthProvider";
-import NoteRating from "../../components/NoteRating";
 import MusicNotesLoader, { cacheNoteColor } from "../../components/MusicNotesLoader";
 import TextSection from "../../components/profile/TextSection";
 import CustomPlaylistSection from "../../components/profile/CustomPlaylistSection";
@@ -59,6 +58,14 @@ function formatNotesText(rating: number) {
   const fullNotes = Math.floor(rating);
   const half = rating % 1 !== 0;
   return "♪".repeat(fullNotes) + (half ? "½" : "");
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+  });
 }
 
 type LayoutSection = {
@@ -85,6 +92,8 @@ const DEFAULT_CARD_BG_COLOR = "#27272a";
 const DEFAULT_CARD_BG_OPACITY = 0.6;
 const DEFAULT_INNER_BG_COLOR = "#3f3f46";
 const DEFAULT_INNER_BG_OPACITY = 0.6;
+const DEFAULT_REVIEW_CARD_BG_COLOR = "#52525b";
+const DEFAULT_REVIEW_CARD_BG_OPACITY = 0.6;
 const DEFAULT_PROFILE_PATTERN = "none" as const;
 const DEFAULT_PROFILE_PATTERN_COLOR = "#22c55e";
 const DEFAULT_PROFILE_PATTERN_OPACITY = 0.2;
@@ -99,6 +108,8 @@ type SectionTheme = {
   outerBgOpacity: number;
   innerBgColor: string;
   innerBgOpacity: number;
+  reviewCardBgColor: string;
+  reviewCardBgOpacity: number;
 };
 
 /** Clamps opacity to [0.1, 1] — prevents fully invisible card backgrounds */
@@ -481,6 +492,8 @@ export default function ProfilePage() {
   const [boxOuterBgOpacityDraft, setBoxOuterBgOpacityDraft] = useState(DEFAULT_CARD_BG_OPACITY);
   const [boxInnerBgColorDraft, setBoxInnerBgColorDraft] = useState(DEFAULT_INNER_BG_COLOR);
   const [boxInnerBgOpacityDraft, setBoxInnerBgOpacityDraft] = useState(DEFAULT_INNER_BG_OPACITY);
+  const [boxReviewCardBgColorDraft, setBoxReviewCardBgColorDraft] = useState(DEFAULT_REVIEW_CARD_BG_COLOR);
+  const [boxReviewCardBgOpacityDraft, setBoxReviewCardBgOpacityDraft] = useState(DEFAULT_REVIEW_CARD_BG_OPACITY);
   const [boxStyleMessage, setBoxStyleMessage] = useState("");
 
   const [showAlbumForm, setShowAlbumForm] = useState(false);
@@ -566,6 +579,8 @@ export default function ProfilePage() {
         setBoxOuterBgOpacityDraft(DEFAULT_CARD_BG_OPACITY);
         setBoxInnerBgColorDraft(DEFAULT_INNER_BG_COLOR);
         setBoxInnerBgOpacityDraft(DEFAULT_INNER_BG_OPACITY);
+        setBoxReviewCardBgColorDraft(DEFAULT_REVIEW_CARD_BG_COLOR);
+        setBoxReviewCardBgOpacityDraft(DEFAULT_REVIEW_CARD_BG_OPACITY);
         return;
       }
 
@@ -576,6 +591,8 @@ export default function ProfilePage() {
       setBoxOuterBgOpacityDraft(baseTheme.outerBgOpacity);
       setBoxInnerBgColorDraft(baseTheme.innerBgColor);
       setBoxInnerBgOpacityDraft(baseTheme.innerBgOpacity);
+      setBoxReviewCardBgColorDraft(baseTheme.reviewCardBgColor);
+      setBoxReviewCardBgOpacityDraft(baseTheme.reviewCardBgOpacity);
       return;
     }
 
@@ -587,6 +604,8 @@ export default function ProfilePage() {
     setBoxOuterBgOpacityDraft(theme.outerBgOpacity);
     setBoxInnerBgColorDraft(theme.innerBgColor);
     setBoxInnerBgOpacityDraft(theme.innerBgOpacity);
+    setBoxReviewCardBgColorDraft(theme.reviewCardBgColor);
+    setBoxReviewCardBgOpacityDraft(theme.reviewCardBgOpacity);
   }, [styleTargetSectionId, layout, accentTextColor]);
 
   useEffect(() => {
@@ -1789,6 +1808,14 @@ export default function ProfilePage() {
         typeof rawTheme?.innerBgOpacity === "number"
           ? clampOpacity(rawTheme.innerBgOpacity)
           : DEFAULT_INNER_BG_OPACITY,
+      reviewCardBgColor:
+        rawTheme?.reviewCardBgColor && /^#[0-9a-fA-F]{6}$/.test(rawTheme.reviewCardBgColor)
+          ? rawTheme.reviewCardBgColor
+          : DEFAULT_REVIEW_CARD_BG_COLOR,
+      reviewCardBgOpacity:
+        typeof rawTheme?.reviewCardBgOpacity === "number"
+          ? clampOpacity(rawTheme.reviewCardBgOpacity)
+          : DEFAULT_REVIEW_CARD_BG_OPACITY,
     };
   }
 
@@ -1805,6 +1832,8 @@ export default function ProfilePage() {
             outerBgOpacity: clampOpacity(boxOuterBgOpacityDraft),
             innerBgColor: boxInnerBgColorDraft,
             innerBgOpacity: clampOpacity(boxInnerBgOpacityDraft),
+            reviewCardBgColor: boxReviewCardBgColorDraft,
+            reviewCardBgOpacity: clampOpacity(boxReviewCardBgOpacityDraft),
           },
         },
       };
@@ -1825,6 +1854,8 @@ export default function ProfilePage() {
           outerBgOpacity: clampOpacity(boxOuterBgOpacityDraft),
           innerBgColor: boxInnerBgColorDraft,
           innerBgOpacity: clampOpacity(boxInnerBgOpacityDraft),
+          reviewCardBgColor: boxReviewCardBgColorDraft,
+          reviewCardBgOpacity: clampOpacity(boxReviewCardBgOpacityDraft),
         },
       },
     }));
@@ -2121,30 +2152,23 @@ export default function ProfilePage() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-semibold text-white">{rating.track_name}</p>
                         <p className="truncate text-xs" style={{ color: theme.accentTextColor }}>{rating.artist_name}</p>
+                        <p className="text-[10px]" style={{ color: theme.accentTextColor }}>Reviewed {formatDate(rating.updated_at)}</p>
                       </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-sm font-semibold" style={{ color: theme.accentTextColor }}><NoteRating rating={rating.rating} /></p>
-                        <p className="text-xs" style={{ color: theme.accentTextColor }}>{rating.rating}/5</p>
-                      </div>
+                      {rating.spotify_track_id && (
+                        <a href={`https://open.spotify.com/track/${rating.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="shrink-0 text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>
+                      )}
                     </div>
-                    {rating.review && (<p className="mt-1.5 truncate text-xs italic" style={{ color: theme.accentTextColor }}>&ldquo;{rating.review}&rdquo;</p>)}
                     <MusicReviewCard
                       rating={rating.rating}
                       review={rating.review}
                       accentColor={theme.accentTextColor}
-                      outerBg={hexToRgba(theme.outerBgColor, Math.min(1, theme.outerBgOpacity * 1.4))}
+                      outerBg={hexToRgba(theme.reviewCardBgColor, theme.reviewCardBgOpacity)}
                       compact
                     />
                     {canCustomizeSections && (
                       <div className="mt-2 flex flex-wrap items-center gap-1">
                         <button onClick={() => startEditRating(rating)} disabled={ratingBusy !== ""} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">✎</button>
                         <button onClick={() => handleDeleteRating(rating.id)} disabled={ratingBusy !== ""} className="rounded border border-red-700 px-2 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">✕</button>
-                        {rating.spotify_track_id && (<a href={`https://open.spotify.com/track/${rating.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>)}
-                      </div>
-                    )}
-                    {!canCustomizeSections && rating.spotify_track_id && (
-                      <div className="mt-2 flex justify-end">
-                        <a href={`https://open.spotify.com/track/${rating.spotify_track_id}`} target="_blank" rel="noopener noreferrer" className="text-xs hover:underline" style={{ color: theme.accentTextColor }}>Listen on Spotify</a>
                       </div>
                     )}
                   </>
@@ -2748,6 +2772,35 @@ export default function ProfilePage() {
                         title="Inner card/button opacity"
                       />
                       <span className="text-right text-xs text-zinc-400">{Math.round(boxInnerBgOpacityDraft * 100)}%</span>
+
+                      <label className="text-[11px] text-zinc-400">Review Card Color</label>
+                      <div className="h-px" />
+                      <div className="flex justify-end">
+                        <input
+                          type="color"
+                          value={boxReviewCardBgColorDraft}
+                          onChange={(e) => {
+                            setBoxReviewCardBgColorDraft(e.target.value);
+                            setBoxStyleMessage("");
+                          }}
+                          className="h-7 w-7 cursor-pointer rounded border border-zinc-600 bg-transparent"
+                          title="Review card background color"
+                        />
+                      </div>
+
+                      <label className="text-[11px] text-zinc-400">Review Card Opacity</label>
+                      <input
+                        type="range"
+                        min={10}
+                        max={100}
+                        value={Math.round(boxReviewCardBgOpacityDraft * 100)}
+                        onChange={(e) => {
+                          setBoxReviewCardBgOpacityDraft(Number(e.target.value) / 100);
+                          setBoxStyleMessage("");
+                        }}
+                        title="Review card opacity"
+                      />
+                      <span className="text-right text-xs text-zinc-400">{Math.round(boxReviewCardBgOpacityDraft * 100)}%</span>
                     </div>
 
                     <div className="mt-2 grid grid-cols-2 gap-2">
@@ -2786,6 +2839,14 @@ export default function ProfilePage() {
                           className="h-4 w-4 rounded border border-zinc-600"
                           style={{ backgroundColor: hexToRgba(boxInnerBgColorDraft, boxInnerBgOpacityDraft) }}
                           title="Inner card preview"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[11px] text-zinc-400">Review</span>
+                        <div
+                          className="h-4 w-4 rounded border border-zinc-600"
+                          style={{ backgroundColor: hexToRgba(boxReviewCardBgColorDraft, boxReviewCardBgOpacityDraft) }}
+                          title="Review card preview"
                         />
                       </div>
                       <div className="flex items-center gap-1">

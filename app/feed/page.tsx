@@ -474,17 +474,19 @@ export default function FeedPage() {
                       {track.ratingsCount} ratings
                     </span>
                   </div>
-                  {track.image_url ? (
-                    <Image
-                      src={track.image_url}
-                      alt={track.track_name}
-                      width={200}
-                      height={112}
-                      className="mb-2 h-28 w-full rounded-lg object-cover"
-                    />
-                  ) : (
-                    <div className="mb-2 h-28 w-full rounded-lg bg-zinc-700" />
-                  )}
+                  <div className="relative mb-2 h-28 w-full overflow-hidden rounded-lg">
+                    {track.image_url ? (
+                      <Image
+                        src={track.image_url}
+                        alt={track.track_name}
+                        fill
+                        sizes="(min-width: 1280px) 200px, (min-width: 768px) 50vw, 100vw"
+                        className="object-cover"
+                      />
+                    ) : (
+                      <div className="h-full w-full bg-zinc-700" />
+                    )}
+                  </div>
                   <p className="truncate text-sm font-semibold text-white">
                     {track.track_name}
                   </p>
